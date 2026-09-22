@@ -7,6 +7,7 @@
 - kitty socket 自动发现（KITTY_LISTEN_ON > /tmp/mykitty-* 最新），避免连死 socket 挂起
 - 所有外部命令带 timeout，绝不阻塞几十秒
 """
+
 import json
 import os
 import re
@@ -18,14 +19,15 @@ CMD_TIMEOUT = 3  # 单条外部命令超时（秒）
 
 def run(cmd, timeout=CMD_TIMEOUT):
     try:
-        return subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL,
-                                       timeout=timeout)
+        return subprocess.check_output(
+            cmd, text=True, stderr=subprocess.DEVNULL, timeout=timeout
+        )
     except Exception:
         return ""
 
 
 _working_socket = None  # 探测成功的 kitty socket，复用给 focus-tab
-_title_conf = None      # (tab_title_template, tab_title_max_length)，动态缓存
+_title_conf = None  # (tab_title_template, tab_title_max_length)，动态缓存
 
 
 def _socket_candidates():
@@ -34,8 +36,10 @@ def _socket_candidates():
     if env:
         cands.append(env)
     # kitty listen_on unix:/tmp/mykitty 实际创建的是 /tmp/mykitty-<PID>
-    cands += ["unix:" + s for s in sorted(glob.glob("/tmp/mykitty-*"),
-                                          key=os.path.getmtime, reverse=True)]
+    cands += [
+        "unix:" + s
+        for s in sorted(glob.glob("/tmp/mykitty-*"), key=os.path.getmtime, reverse=True)
+    ]
     cands.append("")  # kitty @ 自身的 TTY/环境探测
     return cands
 
@@ -70,6 +74,7 @@ def render_tab_title(template, index, title, maxlen=0):
     """按 kitty 的模板渲染纯文本 tab 标题，用于 fzf 显示与 tab bar 一致。
     支持 {index}/{sup.index}/{title}/{title[:N]}/{max_title_length}；
     {fmt.*}、{bell_symbol} 等 ANSI/符号占位符在纯文本环境忽略为空。"""
+
     def sub(m):
         expr = m.group(1).strip()
         if expr in ("index", "sup.index"):
@@ -78,10 +83,11 @@ def render_tab_title(template, index, title, maxlen=0):
             return title
         m2 = re.fullmatch(r"title\[:\s*(\d+)\s*\]", expr)
         if m2:
-            return title[:int(m2.group(1))]
+            return title[: int(m2.group(1))]
         if expr == "max_title_length":
             return str(maxlen or 0)
         return ""  # fmt.* / bell_symbol / activity_symbol / tab.* / num_windows 等
+
     s = _RENDER_VAR.sub(sub, template)
     if maxlen and len(s) > maxlen:
         s = s[:maxlen]
@@ -92,7 +98,11 @@ def kitty_cmd(*args):
     """执行 kitty @ 子命令，自动发现可用 socket（结果缓存）。"""
     global _working_socket
     if _working_socket is not None:
-        return run(["kitty", "@"] + ([f"--to={_working_socket}"] if _working_socket else []) + list(args))
+        return run(
+            ["kitty", "@"]
+            + ([f"--to={_working_socket}"] if _working_socket else [])
+            + list(args)
+        )
     tried = set()
     for sock in _socket_candidates():
         if sock in tried:
@@ -122,8 +132,10 @@ def get_kitty_tabs():
     for win in data:
         for idx, tab in enumerate(win.get("tabs", []), 1):
             title = tab.get("title") or "Unnamed Tab"
-            info = {"tab_title": render_tab_title(tpl, idx, title, maxlen),
-                    "tab_id": tab.get("id")}
+            info = {
+                "tab_title": render_tab_title(tpl, idx, title, maxlen),
+                "tab_id": tab.get("id"),
+            }
             for w in tab.get("windows", []):
                 if w.get("pid"):
                     panes[w["pid"]] = info
@@ -173,8 +185,9 @@ def is_pi(name, cmdline):
     if "switch-pi-agent" in cmdline:
         return False
     c = cmdline.strip()
-    return ("pi-coding-agent" in cmdline or name == "pi"
-            or c == "pi" or c.startswith("pi "))
+    return (
+        "pi-coding-agent" in cmdline or name == "pi" or c == "pi" or c.startswith("pi ")
+    )
 
 
 def collect_agents():
@@ -184,8 +197,14 @@ def collect_agents():
     # tmux client -> kitty tab 映射
     session_to_kitty = {}
     client_tty_by_tab = {}  # kitty tab_id -> 该 tab 内 tmux client 的 tty
-    out = run(["tmux", "list-clients", "-F",
-               "#{client_pid}:::#{client_tty}:::#{client_session}"])
+    out = run(
+        [
+            "tmux",
+            "list-clients",
+            "-F",
+            "#{client_pid}:::#{client_tty}:::#{client_session}",
+        ]
+    )
     for line in out.strip().splitlines():
         parts = line.split(":::")
         if len(parts) == 3:
@@ -202,15 +221,26 @@ def collect_agents():
 
     # tmux pane 信息（pane_pid 索引）
     tmux_panes = {}
-    out = run(["tmux", "list-panes", "-a",
-               "-F", "#{session_name}:::#{window_id}:::#{window_name}:::#{pane_id}:::#{pane_pid}"])
+    out = run(
+        [
+            "tmux",
+            "list-panes",
+            "-a",
+            "-F",
+            "#{session_name}:::#{window_id}:::#{window_name}:::#{pane_id}:::#{pane_pid}",
+        ]
+    )
     for line in out.strip().splitlines():
         parts = line.split(":::")
         if len(parts) == 5:
             sess, win_id, win_name, pane_id, ppid = parts
             try:
-                tmux_panes[int(ppid)] = {"session": sess, "win_id": win_id,
-                                         "win_name": win_name, "pane_id": pane_id}
+                tmux_panes[int(ppid)] = {
+                    "session": sess,
+                    "win_id": win_id,
+                    "win_name": win_name,
+                    "pane_id": pane_id,
+                }
             except ValueError:
                 continue
 
@@ -225,8 +255,9 @@ def collect_agents():
             continue
         seen.add(pane_key)
 
-        k_info = (session_to_kitty.get(t_info["session"]) if t_info else None) \
-            or next((kitty_panes[p] for p in chain if p in kitty_panes), None)
+        k_info = (session_to_kitty.get(t_info["session"]) if t_info else None) or next(
+            (kitty_panes[p] for p in chain if p in kitty_panes), None
+        )
 
         cwd = get_cwd(pid)
         folder = os.path.basename(cwd) if cwd != "Unknown" else "Unknown"
@@ -234,16 +265,22 @@ def collect_agents():
         win_name = t_info["win_name"] if t_info else "N/A"
         tab_title = k_info["tab_title"] if k_info else "No Kitty Tab"
 
-        agents.append({
-            "pid": pid,
-            "display": (f"{pid:<6} │ Kitty: [{tab_title:<30}] │ "
-                        f"Byobu: [{session[:10]}:{win_name[:12]:<12}] │ CWD: {folder}"),
-            "tab_id": str(k_info["tab_id"]) if k_info else "",
-            "pane_id": t_info["pane_id"] if t_info else "",
-            "win_id": t_info["win_id"] if t_info else "",
-            "session": session,
-            "client_tty": client_tty_by_tab.get(k_info["tab_id"], "") if k_info else "",
-        })
+        agents.append(
+            {
+                "pid": pid,
+                "display": (
+                    f"{pid:<6} │ Kitty: [{tab_title:<30}] │ "
+                    f"Byobu: [{session[:10]}:{win_name[:12]:<12}] │ CWD: {folder}"
+                ),
+                "tab_id": str(k_info["tab_id"]) if k_info else "",
+                "pane_id": t_info["pane_id"] if t_info else "",
+                "win_id": t_info["win_id"] if t_info else "",
+                "session": session,
+                "client_tty": client_tty_by_tab.get(k_info["tab_id"], "")
+                if k_info
+                else "",
+            }
+        )
     return agents
 
 
@@ -254,13 +291,16 @@ def main():
         input()
         return
 
-    header = (f"{'PID':<6} │ {'Kitty Tab':<30} │ {'Byobu Window':<27} │ 工作目录\n"
-              "选择 Pi Agent (↑/↓ 选择, Enter 确认跳转, Esc 取消):")
+    header = (
+        f"{'PID':<6} │ {'Kitty Tab':<30} │ {'Byobu Window':<27} │ 工作目录\n"
+        "选择 Pi Agent (↑/↓ 选择, Enter 确认跳转, Esc 取消):"
+    )
     fzf_cmd = ["fzf", "--header", header, "--reverse", "--ansi", "--height=100%"]
 
     try:
-        proc = subprocess.Popen(fzf_cmd, stdin=subprocess.PIPE,
-                                stdout=subprocess.PIPE, text=True)
+        proc = subprocess.Popen(
+            fzf_cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+        )
         selected, _ = proc.communicate(input="\n".join(a["display"] for a in agents))
     except FileNotFoundError:
         print("未找到 fzf，请先运行: brew install fzf")
@@ -289,8 +329,9 @@ def main():
         # 不传 --tab-title：显式标题会被 kitty 视为覆盖（title_overridden），
         # 不套 tab_title_template 且冻结不动；不传则和手动 attach 一样，
         # 标题由活动窗口自动更新并走模板渲染。
-        kitty_cmd("launch", "--type=tab",
-                  "tmux", "attach-session", "-t", target["session"])
+        kitty_cmd(
+            "launch", "--type=tab", "tmux", "attach-session", "-t", target["session"]
+        )
     if target["session"] != "No Byobu":
         t_tty = target["client_tty"]
         if target["tab_id"] and t_tty and our_tty and t_tty != our_tty:

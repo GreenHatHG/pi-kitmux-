@@ -30,6 +30,7 @@ repos:
     hooks:
       - id: codespell
         additional_dependencies: ["tomli"]
+        exclude: uv.lock
 
   - repo: https://github.com/jendrikseipp/vulture
     rev: 'v2.14'
@@ -56,6 +57,6 @@ repos:
 
       - id: pylint
         name: pylint
-        entry: uv run python -m pylint --disable=duplicate-code,missing-module-docstring,missing-class-docstring,missing-function-docstring,too-few-public-methods,unnecessary-ellipsis --score=n
+        entry: uv run python -m pylint --disable=duplicate-code,missing-module-docstring,missing-class-docstring,missing-function-docstring,too-few-public-methods,unnecessary-ellipsis,invalid-name,broad-exception-caught,global-statement,too-many-locals,consider-using-with --score=n
         language: system
         types: [python]

@@ -3,6 +3,7 @@
 主脚本文件名含连字符无法直接 import，通过 importlib 按路径加载。
 只覆盖不依赖 kitty / tmux / fzf 运行环境的纯逻辑。
 """
+
 import importlib.util
 from pathlib import Path
 from unittest import TestCase
@@ -40,9 +41,7 @@ class RenderTabTitleTest(TestCase):
 class IsPiTest(TestCase):
     def test_matches_pi_binary(self) -> None:
         self.assertTrue(switch_pi_agent.is_pi("pi", "pi"))
-        self.assertTrue(
-            switch_pi_agent.is_pi("pi", "/opt/homebrew/bin/pi session --x")
-        )
+        self.assertTrue(switch_pi_agent.is_pi("pi", "/opt/homebrew/bin/pi session --x"))
 
     def test_matches_pi_coding_agent_command(self) -> None:
         self.assertTrue(switch_pi_agent.is_pi("node", "pi-coding-agent --session x"))
