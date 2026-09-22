@@ -1,0 +1,57 @@
+[project]
+name = "pi-kitmux"
+version = "0.1.0"
+description = "switch-pi-agent：fzf 选择并跳转到运行中的 Pi Coding Agent 所在的 Kitty Tab / Byobu Pane"
+requires-python = ">=3.14"
+dependencies = []
+
+[dependency-groups]
+dev = [
+  "mypy>=2.1.0",
+  "pre-commit>=3.0.0",
+  "pylint>=4.0.6",
+  "pyright>=1.1.411",
+]
+
+[tool.uv]
+# 单文件脚本工具，无包结构，uv 只安装 dev 依赖，不构建/安装项目本身
+package = false
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.mypy]
+python_version = "3.14"
+files = ["."]
+warn_unreachable = true
+exclude = '(^\.venv/|^\.git/|^\.mypy_cache/|^\.ruff_cache/|^\.pre-commit-cache/|^\.tmp/)'
+
+[tool.ruff]
+target-version = "py314"
+
+[tool.ruff.lint]
+select = [
+  "C90",
+  "E4",
+  "E7",
+  "E9",
+  "F",
+  "SIM",
+]
+ignore = [
+  "SIM105",
+  "SIM108",
+]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.vulture]
+paths = ["."]
+exclude = [
+  "*/.venv/*",
+  "*/.pre-commit-cache/*",
+]
+min_confidence = 60
+sort_by_size = true

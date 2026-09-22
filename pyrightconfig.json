@@ -1,0 +1,15 @@
+{
+  "include": ["switch-pi-agent.py", "tests"],
+  "exclude": [
+    ".venv",
+    "**/.venv",
+    ".git",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".pre-commit-cache",
+    "**/__pycache__"
+  ],
+  "venvPath": ".",
+  "venv": ".venv",
+  "pythonVersion": "3.14"
+}
