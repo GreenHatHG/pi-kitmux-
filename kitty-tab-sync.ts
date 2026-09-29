@@ -75,7 +75,7 @@ function getSessionId(): string | null {
   try {
     return execFileSync(
       "tmux", ["display-message", "-p", "-t", process.env.TMUX_PANE!, "#{session_id}"],
-      { encoding: "utf8" }
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }
     ).trim() || null;
   } catch { return null; }
 }
@@ -85,9 +85,11 @@ function readPaneRunning(): boolean {
   const pane = process.env.TMUX_PANE;
   if (!(process.env.TMUX && pane)) return false;
   try {
+    // -q：pane 上首次还没设过 @pi_running 时 tmux 会向 stderr 打 "invalid option"，
+    // 默认 stdio 会把它漏进 pi 的 TUI；-q + 吞掉 stderr 双保险。
     return execFileSync(
-      "tmux", ["show-options", "-pv", "-t", pane, "@pi_running"],
-      { encoding: "utf8" }
+      "tmux", ["show-options", "-pvq", "-t", pane, "@pi_running"],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }
     ).trim() === "1";
   } catch { return false; }
 }
@@ -107,7 +109,7 @@ function broadcastStatus() {
     const perWindow = new Map<string, boolean>();
     for (const line of execFileSync(
       "tmux", ["list-panes", "-s", "-t", sessionId, "-F", "#{window_id} #{@pi_running}"],
-      { encoding: "utf8" }
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }
     ).split("\n")) {
       const [windowId, flag] = line.trim().split(/\s+/);
       if (!windowId) continue;
