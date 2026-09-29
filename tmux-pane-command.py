@@ -30,7 +30,11 @@ def parse_enclave_command(command_line: str) -> str | None:
     except ValueError:
         return None
 
-    if len(tokens) < 3 or os.path.basename(tokens[0]) != "enclave" or tokens[1] != "run":
+    if (
+        len(tokens) < 3
+        or os.path.basename(tokens[0]) != "enclave"
+        or tokens[1] != "run"
+    ):
         return None
 
     index = 2

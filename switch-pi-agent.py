@@ -128,13 +128,17 @@ def get_kitty_tabs():
     except Exception:
         return {}
     tpl, maxlen = get_title_config()
-    panes = {}  # pid -> {tab_title, tab_id}
-    for win in data:
+    n_windows = len(data)
+    panes = {}  # pid -> {tab_title, tab_id, tab_index, win_index, n_windows}
+    for win_idx, win in enumerate(data, 1):
         for idx, tab in enumerate(win.get("tabs", []), 1):
             title = tab.get("title") or "Unnamed Tab"
             info = {
                 "tab_title": render_tab_title(tpl, idx, title, maxlen),
                 "tab_id": tab.get("id"),
+                "tab_index": idx,
+                "win_index": win_idx,
+                "n_windows": n_windows,
             }
             for w in tab.get("windows", []):
                 if w.get("pid"):
@@ -268,14 +272,16 @@ def collect_agents():
         agents.append(
             {
                 "pid": pid,
-                "display": (
-                    f"{pid:<6} │ Kitty: [{tab_title:<30}] │ "
-                    f"Byobu: [{session[:10]}:{win_name[:12]:<12}] │ CWD: {folder}"
-                ),
+                "folder": folder,
+                "session": session,
+                "win_name": win_name,
+                "tab_title": tab_title,
                 "tab_id": str(k_info["tab_id"]) if k_info else "",
+                "tab_index": k_info["tab_index"] if k_info else 0,
+                "win_index": k_info["win_index"] if k_info else 0,
+                "win_count": k_info["n_windows"] if k_info else 1,
                 "pane_id": t_info["pane_id"] if t_info else "",
                 "win_id": t_info["win_id"] if t_info else "",
-                "session": session,
                 "client_tty": client_tty_by_tab.get(k_info["tab_id"], "")
                 if k_info
                 else "",
@@ -284,43 +290,67 @@ def collect_agents():
     return agents
 
 
-def main():
-    agents = collect_agents()
-    if not agents:
-        print("未检测到运行中的 Pi Coding Agent。[按 Enter 退出]")
-        input()
-        return
+def build_rows(agents):
+    """把 agent 列表渲染成按 kitty tab 分组的行（组头 + 缩进子行）。
 
-    header = (
-        f"{'PID':<6} │ {'Kitty Tab':<30} │ {'Byobu Window':<27} │ 工作目录\n"
-        "选择 Pi Agent (↑/↓ 选择, Enter 确认跳转, Esc 取消):"
-    )
-    fzf_cmd = ["fzf", "--header", header, "--reverse", "--ansi", "--height=100%"]
-
-    try:
-        proc = subprocess.Popen(
-            fzf_cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+    返回 list[dict]，每项：
+    - kind: "tab"（组头）或 "agent"（子行）
+    - text: 无色文本，用于与 fzf 输出精确回匹配
+    - ansi: 带 ANSI 颜色的显示文本，喂给 fzf --ansi
+    - tab_id: 所属 kitty tab（无则为空串）
+    - agent: 仅子行有，指向原 agent dict
+    组顺序按 (OS window, tab 序号)，无 kitty tab 的组排在最后。
+    """
+    groups = {}
+    for a in agents:
+        if a["tab_id"]:
+            key = ("tab", a["tab_id"])
+            order = (a["win_index"], a["tab_index"])
+            title = a["tab_title"]
+        else:
+            key = ("none", "")
+            order = (10**9, 10**9)
+            title = "No Kitty Tab"
+        g = groups.setdefault(
+            key, {"order": order, "tab_id": a["tab_id"], "title": title, "agents": []}
         )
-        selected, _ = proc.communicate(input="\n".join(a["display"] for a in agents))
-    except FileNotFoundError:
-        print("未找到 fzf，请先运行: brew install fzf")
-        input()
-        return
-    if proc.returncode != 0 or not selected or not selected.strip():
-        return
+        g["agents"].append(a)
 
-    selected = selected.strip()
-    target = next((a for a in agents if a["display"] == selected), None)
-    if not target:
-        return
+    rows = []
+    for grp in sorted(groups.values(), key=lambda item: item["order"]):
+        header = grp["title"]
+        first = grp["agents"][0]
+        if grp["tab_id"] and first["win_count"] > 1:
+            header = f"[win {first['win_index']}] {header}"
+        rows.append(
+            {
+                "kind": "tab",
+                "text": header,
+                "ansi": f"\x1b[1;36m{header}\x1b[0m",
+                "tab_id": grp["tab_id"],
+                "agent": None,
+            }
+        )
+        for a in sorted(
+            grp["agents"],
+            key=lambda item: (item["session"], item["win_name"], item["pid"]),
+        ):
+            child = f"   └ {a['pid']:<6} {a['session']}:{a['win_name']}  {a['folder']}"
+            rows.append(
+                {
+                    "kind": "agent",
+                    "text": child,
+                    "ansi": child,
+                    "tab_id": a["tab_id"],
+                    "agent": a,
+                }
+            )
+    return rows
 
-    # 跳转原则：只把 *目标* 所在的 tmux client 切到目标 session/window/pane，
-    # 绝不动当前 tab 里自己的 client（否则当前窗口会被拖走）。
-    try:
-        our_tty = os.ttyname(0)
-    except OSError:
-        our_tty = None
 
+def jump_to(target, our_tty):
+    """跳转原则：只把 *目标* 所在的 tmux client 切到目标 session/window/pane，
+    绝不动当前 tab 里自己的 client（否则当前窗口会被拖走）。"""
     if target["tab_id"]:
         kitty_cmd("focus-tab", "-m", f"id:{target['tab_id']}")
     elif target["session"] != "No Byobu":
@@ -347,6 +377,58 @@ def main():
             run(["tmux", "select-window", "-t", target["win_id"]])
         if target["pane_id"]:
             run(["tmux", "select-pane", "-t", target["pane_id"]])
+
+
+def main():
+    agents = collect_agents()
+    if not agents:
+        print("未检测到运行中的 Pi Coding Agent。[按 Enter 退出]")
+        input()
+        return
+
+    rows = build_rows(agents)
+    header = "选择 Pi Agent (↑/↓ 选择, Enter 跳转, Esc 取消) —— 按 Kitty Tab 分组"
+    # 回车时用 --accept-nth='{n}' 回传该行在输入里的序号（--no-sort 下即 rows 下标）。
+    # 即便两个 tab 标题完全相同，也能精确定位到被选中的那一条，不依赖显示文本做唯一键。
+    fzf_cmd = [
+        "fzf",
+        "--header",
+        header,
+        "--reverse",
+        "--ansi",
+        "--no-sort",
+        "--accept-nth={n}",
+        "--height=100%",
+    ]
+
+    try:
+        proc = subprocess.Popen(
+            fzf_cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+        )
+        selected, _ = proc.communicate(input="\n".join(r["ansi"] for r in rows))
+    except FileNotFoundError:
+        print("未找到 fzf，请先运行: brew install fzf")
+        input()
+        return
+    if proc.returncode != 0 or not selected or not selected.strip():
+        return
+
+    try:
+        row = rows[int(selected.strip())]
+    except (ValueError, IndexError):
+        return
+
+    # 组头：只聚焦该 kitty tab；无 tab 的组头（No Kitty Tab）无动作
+    if row["kind"] == "tab":
+        if row["tab_id"]:
+            kitty_cmd("focus-tab", "-m", f"id:{row['tab_id']}")
+        return
+
+    try:
+        our_tty = os.ttyname(0)
+    except OSError:
+        our_tty = None
+    jump_to(row["agent"], our_tty)
 
 
 if __name__ == "__main__":

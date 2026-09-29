@@ -62,3 +62,56 @@ class AncestorChainTest(TestCase):
 
     def test_self_parent_does_not_hang(self) -> None:
         self.assertEqual(switch_pi_agent.ancestor_chain(5, {5: 5}), [5])
+
+
+def _agent(**overrides: object) -> dict:
+    base = {
+        "pid": 1,
+        "folder": "repo",
+        "session": "main",
+        "win_name": "pi",
+        "tab_title": "1: repo",
+        "tab_id": "10",
+        "tab_index": 1,
+        "win_index": 1,
+        "win_count": 1,
+        "pane_id": "%1",
+        "win_id": "@1",
+        "client_tty": "",
+    }
+    base.update(overrides)
+    return base
+
+
+class BuildRowsTest(TestCase):
+    def test_groups_agents_under_one_tab_header(self) -> None:
+        a1 = _agent(pid=101, tab_id="10", tab_title="1: repo")
+        a2 = _agent(pid=102, tab_id="10", tab_title="1: repo", win_name="server")
+        rows = switch_pi_agent.build_rows([a1, a2])
+        self.assertEqual([r["kind"] for r in rows], ["tab", "agent", "agent"])
+        self.assertEqual(rows[0]["text"], "1: repo")
+        self.assertTrue(rows[1]["text"].lstrip().startswith("└"))
+
+    def test_group_order_and_no_kitty_last(self) -> None:
+        later = _agent(pid=1, tab_id="20", tab_title="2: x", tab_index=2, win_index=1)
+        earlier = _agent(pid=2, tab_id="10", tab_title="1: y", tab_index=1, win_index=1)
+        none = _agent(
+            pid=3, tab_id="", tab_title="No Kitty Tab", tab_index=0, win_index=0
+        )
+        rows = switch_pi_agent.build_rows([later, none, earlier])
+        headers = [r["text"] for r in rows if r["kind"] == "tab"]
+        self.assertEqual(headers, ["1: y", "2: x", "No Kitty Tab"])
+
+    def test_multi_window_header_prefix(self) -> None:
+        a = _agent(win_count=2, win_index=2, tab_title="3: repo")
+        rows = switch_pi_agent.build_rows([a])
+        self.assertEqual(rows[0]["text"], "[win 2] 3: repo")
+
+    def test_duplicate_tab_titles_stay_distinct(self) -> None:
+        # 两个 tab 渲染出完全相同的标题时，仍是两条独立行（由行号回传消歧义）
+        a1 = _agent(pid=11, tab_id="10", tab_title="1: repo", tab_index=1)
+        a2 = _agent(pid=22, tab_id="20", tab_title="1: repo", tab_index=2)
+        rows = switch_pi_agent.build_rows([a1, a2])
+        headers = [r for r in rows if r["kind"] == "tab"]
+        self.assertEqual([h["text"] for h in headers], ["1: repo", "1: repo"])
+        self.assertEqual([h["tab_id"] for h in headers], ["10", "20"])

@@ -50,8 +50,12 @@ class ParseEnclaveCommandTest(TestCase):
     def test_rejects_non_enclave_and_incomplete_commands(self) -> None:
         self.assertIsNone(pane_command.parse_enclave_command("pi"))
         self.assertIsNone(pane_command.parse_enclave_command("enclave run --"))
-        self.assertIsNone(pane_command.parse_enclave_command("enclave run --future x pi"))
-        self.assertIsNone(pane_command.parse_enclave_command("enclave run 'unterminated"))
+        self.assertIsNone(
+            pane_command.parse_enclave_command("enclave run --future x pi")
+        )
+        self.assertIsNone(
+            pane_command.parse_enclave_command("enclave run 'unterminated")
+        )
 
 
 class ResolvePaneCommandTest(TestCase):
