@@ -8,10 +8,11 @@ Pi Coding Agent 的终端多路复用工具集：用 `fzf` 选择并跳转到运
 |---|---|
 | `switch-pi-agent.py` | 主脚本。扫描进程表找到所有运行中的 Pi Agent，定位其所在的 Kitty Tab / Byobu 窗格与工作目录，用 `fzf` 交互选择后跳转 |
 | `kitty-tab-sync.ts` | Pi 扩展。综合 `agent_start` / `agent_settled`、阻塞式 UI prompt 与 watchdog 生命周期，用 pane 级 `@pi_running` 作事实源，写逐窗口 `@pi_win`（tmux 窗口栏 ⏳）与会话级 `@pi_total`（kitty 标题 ⏳ N）；真正跑完时发 bell |
+| `tmux-pane-command.py` | tmux 状态栏 helper。当 `pane_current_command` 只能看到沙盒 wrapper `enclave` 时，从前台 leader 的完整 `enclave run ...` 启动命令直接提取真实应用名 |
 | `pi-tab-monitor.sh` | 早期轮询方案：后台循环用 `pgrep` 检测 pi 进程并改写终端标题（已被 `kitty-tab-sync.ts` 事件驱动方案取代，保留备用） |
 | `scripts/check.sh` | 一键验证：pre-commit 静态检查（ruff / codespell / vulture / mypy / pyright / pylint）+ 单元测试 |
-| `scripts/deploy.sh` | 部署：把 `switch-pi-agent.py` 和 `kitty-tab-sync.ts` 分别软链到 `~/.local/bin/` 与 `~/.pi/agent/extensions/` |
-| `tests/` | `switch-pi-agent.py` 的单元测试 |
+| `scripts/deploy.sh` | 部署：把两个 tmux helper 软链到 `~/.local/bin/`，把 Pi 扩展软链到 `~/.pi/agent/extensions/` |
+| `tests/` | Python helper 的单元测试 |
 
 ## 工作原理
 
@@ -29,6 +30,13 @@ Pi Coding Agent 的终端多路复用工具集：用 `fzf` 选择并跳转到运
 - kitty socket 自动发现（`KITTY_LISTEN_ON` > `/tmp/mykitty-*` 最新 > 默认探测），避免连死 socket 挂起
 - 所有外部命令带 3 秒超时，绝不阻塞
 - 自身进程（`switch-pi-agent`）会从匹配中排除
+
+`tmux-pane-command.py`：
+
+- tmux 原生 `#{pane_current_command}` 只返回前台进程组 leader 的程序名；执行 `enclave run pi` 时因此只能显示 `enclave`
+- helper 根据 `#{pane_pid}` 读取 pane 的 TPGID，再读取该前台 leader 的完整命令行，直接从 `enclave run [options] [--] <command>` 提取 `<command>`
+- `.tmux.conf` 的窗口状态格式只在 `pane_current_command == enclave` 时通过异步 `#(...)` 调用 helper，普通程序仍使用 tmux 原生窗口名
+- 读取失败或进程切换竞态时安全回退为 `enclave`；不会遍历或猜测沙盒中的子进程
 
 `kitty-tab-sync.ts`：
 
@@ -51,8 +59,11 @@ Pi Coding Agent 的终端多路复用工具集：用 `fzf` 选择并跳转到运
 ### 日常使用
 
 ```bash
-# 软链主脚本与 Pi 扩展到对应目录
+# 软链主脚本、tmux helper 与 Pi 扩展到对应目录
 ./scripts/deploy.sh
+
+# 重新加载 tmux 配置，使 enclave 窗口名显示其真实应用
+tmux source-file ~/.tmux.conf
 
 # 运行（或在 ~/.tmux.conf 中绑定快捷键弹出执行）
 ~/.local/bin/switch-pi-agent.py
