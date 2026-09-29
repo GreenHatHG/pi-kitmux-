@@ -64,8 +64,13 @@ const sink: StatusSink = new TmuxStatusSink(process.env.TMUX_PANE ?? "");
 
 // Pi 当前这一轮是否在执行。agent_settled 只结束这一轮，不代表 watchdog 不会稍后续跑。
 let agentRunning = false;
-// watchdog 是否仍处于监控状态（含倒计时/输入暂停）；由 pi.events 跨扩展同步。
+// watchdog 自身的监控状态（含倒计时/输入暂停）；由 pi.events 跨扩展同步。
+// 注意这是「watchdog 的状态」而非「agent 的状态」：空会话里它会自行 armed，
+// 因此只在下面 hasRunOnce 为真时，才把它当作「settled 后仍会续跑」的抑制项。
 let watchdogActive = false;
+// 本进程是否已经跑过至少一轮。用于把 watchdogActive 收窄到真正有活可续的场景，
+// 否则新开/恢复的空会话会因为 watchdog 自启动而误亮 ⏳。session_start 时复位。
+let hasRunOnce = false;
 // 阻塞式 UI prompt 期间已临时置 idle 的标志（让重复 start/end 幂等）。
 let pausedByPrompt = false;
 // 已实际写入 tmux/标题的 effective 状态，避免重复写与重复响铃。
@@ -147,8 +152,10 @@ function updateStatus(running: boolean) {
 }
 
 function applyEffectiveState() {
-  // UI prompt 表示 AI 正在等人，优先于 agent/watchdog 的 running 状态。
-  const running = !pausedByPrompt && (agentRunning || watchdogActive);
+  // UI prompt 表示 AI 正在等人，优先。
+  // watchdogActive 只在已经跑过一轮后生效：那时它代表「本轮 settled 后 watchdog 还会续跑」；
+  // 跑过之前它只说明 watchdog 自我 armed（空会话/恢复会话），与 agent 是否在跑无关。
+  const running = !pausedByPrompt && (agentRunning || (watchdogActive && hasRunOnce));
   if (running === isMarkedRunning) return;
   isMarkedRunning = running;
   updateStatus(running);
@@ -162,8 +169,9 @@ function cleanupOnExit() {
 }
 
 export default function (pi: ExtensionAPI) {
-  // watchdog 是独立扩展：它在 agent_settled 后倒计时，再用 sendUserMessage
-  // 开新一轮。只有 watchdog 自己知道是否还会续跑，因此通过共享事件总线同步真值。
+  // watchdog 是独立扩展：它在 agent_settled 后倒计时，再用 sendUserMessage 开新一轮。
+  // 这里同步的是「watchdog 自己的状态」，不是 agent 状态：只有它知道本轮 settled 后
+  // 是否还会续跑，所以仅用来抑制提前判定完成/响铃（是否生效见 hasRunOnce 门控）。
   pi.events.on("watchdog:state", (raw: unknown) => {
     watchdogActive = Boolean((raw as { running?: unknown } | undefined)?.running);
     applyEffectiveState();
@@ -171,11 +179,17 @@ export default function (pi: ExtensionAPI) {
 
   // 启动/热重载时从 pane 事实源恢复已写状态并重算一次；随后查询 watchdog 当前状态，
   // 避免扩展加载顺序或 reload 导致漏掉它先前发出的广播。
-  pi.on("session_start" as any, async () => {
-    agentRunning = false;
+  pi.on("session_start" as any, async (_event: any, ctx: any) => {
+    // pane 事实源可能是残留（SIGKILL 等），也可能真是「热重载时 agent 正跑着」——
+    // 两者都表现为 @pi_running=1。再问一次会话是否真的忙（ctx.isIdle），同为真才认定
+    // 本轮在跑，避免把残留当成运行中；isIdle 不可用时保守按否处理。
+    const factRunning = readPaneRunning();
+    const busy = factRunning && ctx?.isIdle?.() === false;
+    agentRunning = busy;
+    hasRunOnce = busy;
     watchdogActive = false;
     pausedByPrompt = false;
-    isMarkedRunning = readPaneRunning();
+    isMarkedRunning = factRunning;
     broadcastStatus();
     // 延后一拍，让所有扩展的 session_start handler 先跑完：若 watchdog 会按 env
     // 自动启动，它会先广播 true；随后 query 再确认最终状态。若没有 watchdog，
@@ -188,6 +202,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("agent_start" as any, async () => {
+    hasRunOnce = true;
     agentRunning = true;
     applyEffectiveState();
   });

@@ -44,7 +44,7 @@ Pi Coding Agent 的终端多路复用工具集：用 `fzf` 选择并跳转到运
 - pane 级 `@pi_running` 是唯一事实源（pane 销毁自动清除，不残留）
 - 窗口级 `@pi_win`：tmux/byobu 窗口栏每格只显示本窗口跑没跑（`⏳`，不带数字）
 - 会话级 `@pi_total`：本 session 运行中的 agent 总数 `⏳ N`，供 kitty tab 标题（`set-titles-string`）；放 session 级，新开的 tmux 窗口也能立即显示
-- 与 `pi-extension-watchdog` 通过 `pi.events` 同步生命周期：单轮 `agent_settled` 后若 watchdog 仍会催促，继续保持 ⏳；只有 watchdog 停止/挂起且当前 agent 已结束时才清状态并响铃
+- 与 `pi-extension-watchdog` 通过 `pi.events` 同步生命周期：watchdog 的 `running` 只表示它自己处于监控/armed 状态（空会话自启动时也会为真），因此仅在**本进程已跑过至少一轮**后，才用它作为「单轮 `agent_settled` 后仍会续跑」的抑制项继续保持 ⏳；否则空会话会误亮。只有 watchdog 停止/挂起且当前 agent 已结束时才清状态并响铃
 - 阻塞式 UI prompt（如 plan 评审）期间临时视为等待用户，不显示运行中；prompt 结束后按 agent/watchdog 真值恢复
 - 跑完时发送 bell（`\a`）：kitty 的 `bell_on_tab` 会给未聚焦窗口的 tab 加铃铛
 - 所有对 tmux 的写调用收在 `StatusSink` 后面，便于将来接远端 sink
