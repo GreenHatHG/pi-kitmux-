@@ -6,12 +6,13 @@ Pi Coding Agent 的终端多路复用工具集：用 `fzf` 选择并跳转到运
 
 | 文件 | 说明 |
 |---|---|
+| `tmux.conf` | tmux / Byobu 配置的唯一事实源。`scripts/deploy.sh` 把它同时软链到 `~/.tmux.conf`（原生 tmux 读取）与 `~/.byobu/keybindings.tmux`（Byobu 的 `profiles/tmuxrc` 第 35 行 source），保证两边配置一致 |
 | `switch-pi-agent.py` | 主脚本。扫描进程表找到所有运行中的 Pi Agent，定位其所在的 Kitty Tab / Byobu 窗格与工作目录，用 `fzf` 交互选择后跳转 |
 | `kitty-tab-sync.ts` | Pi 扩展。综合 `agent_start` / `agent_settled`、阻塞式 UI prompt 与 watchdog 生命周期，用 pane 级 `@pi_running` 作事实源，写逐窗口 `@pi_win`（tmux 窗口栏 ⏳）与会话级 `@pi_total`（kitty 标题 ⏳ N）；真正跑完时发 bell |
 | `tmux-pane-command.py` | tmux 状态栏 helper。当 `pane_current_command` 只能看到沙盒 wrapper `enclave` 时，从前台 leader 的完整 `enclave run ...` 启动命令直接提取真实应用名 |
 | `pi-tab-monitor.sh` | 早期轮询方案：后台循环用 `pgrep` 检测 pi 进程并改写终端标题（已被 `kitty-tab-sync.ts` 事件驱动方案取代，保留备用） |
 | `scripts/check.sh` | 一键验证：pre-commit 静态检查（ruff / codespell / vulture / mypy / pyright / pylint）+ 单元测试 |
-| `scripts/deploy.sh` | 部署：把两个 tmux helper 软链到 `~/.local/bin/`，把 Pi 扩展软链到 `~/.pi/agent/extensions/` |
+| `scripts/deploy.sh` | 部署：把 `tmux.conf` 软链到 `~/.tmux.conf` 与 `~/.byobu/keybindings.tmux`，把两个 tmux helper 软链到 `~/.local/bin/`，把 Pi 扩展软链到 `~/.pi/agent/extensions/`。首次运行会把已存在的真实文件备份为 `*.bak.<时间戳>` |
 | `tests/` | Python helper 的单元测试 |
 
 ## 工作原理
@@ -59,7 +60,8 @@ Pi Coding Agent 的终端多路复用工具集：用 `fzf` 选择并跳转到运
 ### 日常使用
 
 ```bash
-# 软链主脚本、tmux helper 与 Pi 扩展到对应目录
+# 软链 tmux.conf、主脚本、tmux helper 与 Pi 扩展到对应目录
+# （仓库成为 ~/.tmux.conf 与 ~/.byobu/keybindings.tmux 的唯一事实源，改仓库即生效）
 ./scripts/deploy.sh
 
 # 重新加载 tmux 配置，使 enclave 窗口名显示其真实应用
