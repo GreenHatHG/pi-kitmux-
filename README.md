@@ -6,7 +6,7 @@ Pi Coding Agent 的终端多路复用工具集：用 `fzf` 选择并跳转到运
 
 | 文件 | 说明 |
 |---|---|
-| `tmux.conf` | tmux / Byobu 配置的唯一事实源。`scripts/deploy.sh` 把它同时软链到 `~/.tmux.conf`（原生 tmux 读取）与 `~/.byobu/keybindings.tmux`（Byobu 的 `profiles/tmuxrc` 第 35 行 source），保证两边配置一致 |
+| `tmux.conf` | tmux / Byobu 配置的唯一事实源。`scripts/deploy.sh` 把它同时软链到 `~/.tmux.conf`（原生 tmux 读取）与 `~/.byobu/keybindings.tmux`（Byobu 的 `profiles/tmuxrc` 第 35 行 source），保证两边配置一致。窗口栏显示「名称@位置」（如 `pi@main` / `pi@wt:5`），一眼区分主仓与各 worktree |
 | `switch-pi-agent.py` | 主脚本。扫描进程表找到所有运行中的 Pi Agent，定位其所在的 Kitty Tab / Byobu 窗格与工作目录，用 `fzf` 交互选择后跳转（按 Kitty Tab 分组展示） |
 | `kitty-tab-sync.ts` | Pi 扩展。综合 `agent_start` / `agent_settled`、阻塞式 UI prompt 与 watchdog 生命周期，用 pane 级 `@pi_running` / `@pi_done` 作事实源，写逐窗口 `@pi_win`（tmux 窗口栏 ⏳ 运行中 / ✅ 已完成）与会话级 `@pi_total`（kitty 标题 ⏳ N）；真正跑完时发 bell |
 | `tmux-pane-command.py` | tmux 状态栏 helper。当 `pane_current_command` 只能看到沙盒 wrapper `enclave` 时，从前台 leader 的完整 `enclave run ...` 启动命令直接提取真实应用名 |
@@ -38,6 +38,13 @@ Pi Coding Agent 的终端多路复用工具集：用 `fzf` 选择并跳转到运
 - helper 根据 `#{pane_pid}` 读取 pane 的 TPGID，再读取该前台 leader 的完整命令行，直接从 `enclave run [options] [--] <command>` 提取 `<command>`
 - `.tmux.conf` 的窗口状态格式只在 `pane_current_command == enclave` 时通过异步 `#(...)` 调用 helper，普通程序仍使用 tmux 原生窗口名
 - 读取失败或进程切换竞态时安全回退为 `enclave`；不会遍历或猜测沙盒中的子进程
+
+窗口栏位置标签（`tmux.conf`）：
+
+- 统一为「名称@位置」，位置由 `@pi_where` 计算：路径含 `/.worktrees/` 显示 `wt:<目录名>`（即分支名），否则显示 `main`
+- 因此 enclave 窗口显示 `pi@main` / `pi@wt:5`；非 enclave 窗口显示 `#W@<位置>`（如 `zsh@main`）
+- kitty 标题（`set-titles-string`）用 `@pi_repo`：去掉 `/.worktrees/...` 后取仓库根目录名，故同一仓库的所有 worktree 固定显示同一个 basename（如 `pi-kitmux`），不再随 worktree 变化
+- tab 正文抽成 `@pi_win_fmt`，`window-status-format` 与 `window-status-current-format` 用 `#{E:@pi_win_fmt}` 共用，避免两行漂移
 
 `kitty-tab-sync.ts`：
 
