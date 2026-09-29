@@ -2,9 +2,10 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execFileSync } from "node:child_process";
 import * as path from "node:path";
 
-// 状态分三个去处：
+// 状态分四个去处：
 //   - pane 级 @pi_running：事实源（本 pane 的任务是否仍未完成；含 watchdog 续跑），pane 销毁自动清除。
-//   - window 级 @pi_win："⏳ " / ""，tmux/byobu 窗口栏每个 tab 只显示自己是否仍在处理（不带数字）。
+//   - pane 级 @pi_done：本 pane 上一轮已真正跑完且未被新一轮覆盖，pane 销毁自动清除。
+//   - window 级 @pi_win："⏳ "（有 pane 在跑，优先）/ "✅ "（全部跑完）/ ""，tmux/byobu 窗口栏逐窗口展示。
 //   - session 级 @pi_total："⏳ N "（本 session 未完成的任务总数），kitty tab 标题用。
 //     放 session 级是关键：新开的 tmux 窗口不需要等下一次广播就能在标题里看到总数。
 // 跑完时向 tty 发 BEL：kitty 的 bell_on_tab 会给「未聚焦窗口」的 tab 加铃铛（响铃模式）。
@@ -13,9 +14,12 @@ import * as path from "node:path";
 // 所有对 tmux 的「写」都经由 StatusSink：本机由 TmuxStatusSink 用 CLI 实现。
 // 未来若 pi 跑在远端（VPS），只需换一个 sink 实现（例如把事件发往 SSH 反向 socket），
 // 状态判定逻辑不必改动。读操作（display-message / list-panes）目前仍是本机 tmux 专属。
+type WindowStatus = "running" | "done" | "idle";
+
 interface StatusSink {
   setPaneRunning(on: boolean): void;
-  setWindowRunning(windowId: string, on: boolean): void;
+  setPaneDone(on: boolean): void;
+  setWindowStatus(windowId: string, status: WindowStatus): void;
   setSessionTotal(sessionId: string, text: string): void;
   clearLegacy(): void;
   refresh(): void;
@@ -37,9 +41,15 @@ class TmuxStatusSink implements StatusSink {
     this.cmd(["set", "-pq", "-t", this.pane, "@pi_running", on ? "1" : ""]);
   }
 
-  // 每个窗口只标记「跑没跑」，不带数字
-  setWindowRunning(windowId: string, on: boolean): void {
-    this.cmd(["set", "-wq", "-t", windowId, "@pi_win", on ? "⏳ " : ""]);
+  // 与 @pi_running 同理，pane 级、pane 销毁自动清除；跑完置 1，下一轮/退出清空
+  setPaneDone(on: boolean): void {
+    this.cmd(["set", "-pq", "-t", this.pane, "@pi_done", on ? "1" : ""]);
+  }
+
+  // 每个窗口一个展示态：running 优先，其次 done，否则空
+  setWindowStatus(windowId: string, status: WindowStatus): void {
+    const text = status === "running" ? "⏳ " : status === "done" ? "✅ " : "";
+    this.cmd(["set", "-wq", "-t", windowId, "@pi_win", text]);
   }
 
   // 会话级总数：kitty tab 标题用；放 session 级，新开的 tmux 窗口无需等广播即能显示
@@ -47,7 +57,9 @@ class TmuxStatusSink implements StatusSink {
     this.cmd(["set", "-t", sessionId, "@pi_total", text]);
   }
 
-  // 防御性清理：废弃的 window 级 @pi_status / @pi_done 全局默认值清掉
+  // 防御性清理：废弃的 window 级 @pi_status / @pi_done 全局默认值清掉。
+  // 注意：这里清的是「window 级」遗留的 @pi_done；本扩展现用的 @pi_done 是 pane 级
+  // （set -pq），命名空间不同，别把这里的清理误当成在删新功能。
   clearLegacy(): void {
     this.cmd(["set", "-gu", "@pi_status"]);
     this.cmd(["set", "-wgu", "@pi_status"]);
@@ -75,6 +87,10 @@ let hasRunOnce = false;
 let pausedByPrompt = false;
 // 已实际写入 tmux/标题的 effective 状态，避免重复写与重复响铃。
 let isMarkedRunning = false;
+// pi 进程正在退出（cleanupOnExit）：退出不是「跑完」，不得置 ✅，且需强制清掉旧的 ✅。
+let quitting = false;
+// session_start 期间的状态校正：pane 残留的 @pi_running 被清掉不算「跑完」，抑制误置 ✅。
+let suppressDone = false;
 
 function getSessionId(): string | null {
   try {
@@ -100,7 +116,7 @@ function readPaneRunning(): boolean {
 }
 
 // 一次 list-panes 同时算出「每个窗口跑没跑」和「本 session 运行中总数」：
-//   @pi_win   = "⏳ " / ""（window 级，tmux 窗口栏逐窗口）
+//   @pi_win   = "⏳ " / "✅ " / ""（window 级，tmux 窗口栏逐窗口；running 优先于 done）
 //   @pi_total = "⏳ N "（session 级，kitty tab 标题；放 session 级后新窗口自动继承）
 // 并发写为 last-writer-wins，偏差窗口毫秒级，下次任意事件自愈。
 function broadcastStatus() {
@@ -111,39 +127,43 @@ function broadcastStatus() {
   try {
     const sessionId = getSessionId();
     if (!sessionId) return;
-    const perWindow = new Map<string, boolean>();
+    // 逐窗口聚合三态：只要有 pane 在跑就是 running；否则只要有 pane done 就是 done
+    const perWindow = new Map<string, WindowStatus>();
     for (const line of execFileSync(
-      "tmux", ["list-panes", "-s", "-t", sessionId, "-F", "#{window_id} #{@pi_running}"],
+      "tmux", ["list-panes", "-s", "-t", sessionId, "-F", "#{window_id} #{@pi_running} #{@pi_done}"],
       { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }
     ).split("\n")) {
-      const [windowId, flag] = line.trim().split(/\s+/);
+      const [windowId, runningFlag, doneFlag] = line.trim().split(/\s+/);
       if (!windowId) continue;
-      if (flag === "1") perWindow.set(windowId, true);
-      else if (!perWindow.has(windowId)) perWindow.set(windowId, false);
+      const current = perWindow.get(windowId);
+      if (runningFlag === "1") perWindow.set(windowId, "running");
+      else if (doneFlag === "1" && current !== "running") perWindow.set(windowId, "done");
+      else if (!current) perWindow.set(windowId, "idle");
     }
 
-    const total = [...perWindow.values()].filter(Boolean).length;
+    const total = [...perWindow.values()].filter((status) => status === "running").length;
     sink.setSessionTotal(sessionId, total > 0 ? `⏳ ${total} ` : "");
-    for (const [windowId, running] of perWindow) {
-      sink.setWindowRunning(windowId, running);
+    for (const [windowId, status] of perWindow) {
+      sink.setWindowStatus(windowId, status);
     }
     sink.refresh();
   } catch {}
 }
 
-function updateStatus(running: boolean) {
+function updateStatus(running: boolean, done: boolean) {
   const isTmux = Boolean(process.env.TMUX);
 
   if (isTmux) {
     // 自身标记：pane 级选项，pane 销毁时自动清除，不会残留
     sink.setPaneRunning(running);
+    sink.setPaneDone(done);
     // 防御性清理：旧版扩展用的 window 级 @pi_* 已废弃
     sink.clearLegacy();
     broadcastStatus();
   } else {
     // 兼容非 tmux 环境
     const folder = path.basename(process.cwd());
-    const statusTag = running ? "⏳ " : "";
+    const statusTag = running ? "⏳ " : done ? "✅ " : "";
     process.stdout.write(`\x1b]2;${statusTag}${folder}\x07`);
   }
 
@@ -158,14 +178,29 @@ function applyEffectiveState() {
   const running = !pausedByPrompt && (agentRunning || (watchdogActive && hasRunOnce));
   if (running === isMarkedRunning) return;
   isMarkedRunning = running;
-  updateStatus(running);
+  // 只有「真正跑完」才置 ✅：等待用户 prompt、pi 退出、session_start 的
+  // 状态校正都不是完成，均抑制。
+  const done = !running && !pausedByPrompt && !quitting && !suppressDone;
+  updateStatus(running, done);
 }
 
 function cleanupOnExit() {
+  quitting = true;
   agentRunning = false;
   watchdogActive = false;
   pausedByPrompt = false;
-  applyEffectiveState();
+  const wasRunning = isMarkedRunning;
+  isMarkedRunning = false;
+  if (wasRunning) {
+    // 正常 running→false：走常规路径（含响铃），@pi_done 因 quitting 保持空
+    updateStatus(false, false);
+  } else if (process.env.TMUX && process.env.TMUX_PANE) {
+    // 已经处于 done/idle：applyEffectiveState 会 early-return，必须强制清掉
+    // pane 上的 @pi_done，避免 ✅ 留在已退出的 pane 上。
+    sink.setPaneRunning(false);
+    sink.setPaneDone(false);
+    broadcastStatus();
+  }
 }
 
 export default function (pi: ExtensionAPI) {
@@ -179,7 +214,14 @@ export default function (pi: ExtensionAPI) {
 
   // 启动/热重载时从 pane 事实源恢复已写状态并重算一次；随后查询 watchdog 当前状态，
   // 避免扩展加载顺序或 reload 导致漏掉它先前发出的广播。
-  pi.on("session_start" as any, async (_event: any, ctx: any) => {
+  pi.on("session_start" as any, async (event: any, ctx: any) => {
+    // /new、/resume、/fork 是「换了一个 session」，上一轮的 ✅ 属于旧上下文，清掉；
+    // reload（热重载）和 startup（新进程，正常退出已清过）保留 pane 上的 ✅。
+    if (event?.reason !== "reload" && process.env.TMUX && process.env.TMUX_PANE) {
+      sink.setPaneDone(false);
+    }
+    // 状态校正期间禁止置 ✅：reload 后残留的 @pi_running=1 被清掉是「校正」而非「跑完」
+    suppressDone = true;
     // pane 事实源可能是残留（SIGKILL 等），也可能真是「热重载时 agent 正跑着」——
     // 两者都表现为 @pi_running=1。再问一次会话是否真的忙（ctx.isIdle），同为真才认定
     // 本轮在跑，避免把残留当成运行中；isIdle 不可用时保守按否处理。
@@ -189,7 +231,9 @@ export default function (pi: ExtensionAPI) {
     hasRunOnce = busy;
     watchdogActive = false;
     pausedByPrompt = false;
+    // 保留 pane 事实源不变，交由下方 setTimeout 的校正路径决定是否清除
     isMarkedRunning = factRunning;
+    // 直接读 pane 选项：@pi_done=1 的窗口立即恢复 ✅，且不受其它 session_start 影响
     broadcastStatus();
     // 延后一拍，让所有扩展的 session_start handler 先跑完：若 watchdog 会按 env
     // 自动启动，它会先广播 true；随后 query 再确认最终状态。若没有 watchdog，
@@ -198,6 +242,7 @@ export default function (pi: ExtensionAPI) {
       watchdogActive = false;
       pi.events.emit("watchdog:state:query");
       applyEffectiveState();
+      suppressDone = false; // 必须在 apply 之后复位，否则校正路径可能误置 ✅
     }, 0);
   });
 
@@ -219,7 +264,11 @@ export default function (pi: ExtensionAPI) {
   pi.on("ui_prompt_start" as any, async () => {
     if (pausedByPrompt) return;
     pausedByPrompt = true;
+    // 新的交互（prompt）已开始，上一轮的 ✅ 不再代表当前状态；纯 done→prompt 时
+    // applyEffectiveState 会因 running 未变而 early-return，所以这里直接清并广播。
+    if (process.env.TMUX && process.env.TMUX_PANE) sink.setPaneDone(false);
     applyEffectiveState();
+    broadcastStatus();
   });
   pi.on("ui_prompt_end" as any, async (_event: any, ctx: any) => {
     if (!pausedByPrompt) return;

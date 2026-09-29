@@ -8,7 +8,7 @@ Pi Coding Agent 的终端多路复用工具集：用 `fzf` 选择并跳转到运
 |---|---|
 | `tmux.conf` | tmux / Byobu 配置的唯一事实源。`scripts/deploy.sh` 把它同时软链到 `~/.tmux.conf`（原生 tmux 读取）与 `~/.byobu/keybindings.tmux`（Byobu 的 `profiles/tmuxrc` 第 35 行 source），保证两边配置一致 |
 | `switch-pi-agent.py` | 主脚本。扫描进程表找到所有运行中的 Pi Agent，定位其所在的 Kitty Tab / Byobu 窗格与工作目录，用 `fzf` 交互选择后跳转 |
-| `kitty-tab-sync.ts` | Pi 扩展。综合 `agent_start` / `agent_settled`、阻塞式 UI prompt 与 watchdog 生命周期，用 pane 级 `@pi_running` 作事实源，写逐窗口 `@pi_win`（tmux 窗口栏 ⏳）与会话级 `@pi_total`（kitty 标题 ⏳ N）；真正跑完时发 bell |
+| `kitty-tab-sync.ts` | Pi 扩展。综合 `agent_start` / `agent_settled`、阻塞式 UI prompt 与 watchdog 生命周期，用 pane 级 `@pi_running` / `@pi_done` 作事实源，写逐窗口 `@pi_win`（tmux 窗口栏 ⏳ 运行中 / ✅ 已完成）与会话级 `@pi_total`（kitty 标题 ⏳ N）；真正跑完时发 bell |
 | `tmux-pane-command.py` | tmux 状态栏 helper。当 `pane_current_command` 只能看到沙盒 wrapper `enclave` 时，从前台 leader 的完整 `enclave run ...` 启动命令直接提取真实应用名 |
 | `pi-tab-monitor.sh` | 早期轮询方案：后台循环用 `pgrep` 检测 pi 进程并改写终端标题（已被 `kitty-tab-sync.ts` 事件驱动方案取代，保留备用） |
 | `scripts/check.sh` | 一键验证：pre-commit 静态检查（ruff / codespell / vulture / mypy / pyright / pylint）+ 单元测试 |
@@ -41,8 +41,8 @@ Pi Coding Agent 的终端多路复用工具集：用 `fzf` 选择并跳转到运
 
 `kitty-tab-sync.ts`：
 
-- pane 级 `@pi_running` 是唯一事实源（pane 销毁自动清除，不残留）
-- 窗口级 `@pi_win`：tmux/byobu 窗口栏每格只显示本窗口跑没跑（`⏳`，不带数字）
+- pane 级 `@pi_running` / `@pi_done` 是事实源（pane 销毁自动清除，不残留）：前者表示本 pane 仍在处理，后者表示上一轮已真正跑完且未被新一轮覆盖
+- 窗口级 `@pi_win`：tmux/byobu 窗口栏每格显示三态——有 pane 在跑为 `⏳`（优先于 ✅）、全部跑完为 `✅`、否则为空（均不带数字）；`✅` 持续到该 pane 下一轮运行、出现阻塞式 prompt、切换 session（`/new` / `/resume` / `/fork`）或进程退出
 - 会话级 `@pi_total`：本 session 运行中的 agent 总数 `⏳ N`，供 kitty tab 标题（`set-titles-string`）；放 session 级，新开的 tmux 窗口也能立即显示
 - 与 `pi-extension-watchdog` 通过 `pi.events` 同步生命周期：watchdog 的 `running` 只表示它自己处于监控/armed 状态（空会话自启动时也会为真），因此仅在**本进程已跑过至少一轮**后，才用它作为「单轮 `agent_settled` 后仍会续跑」的抑制项继续保持 ⏳；否则空会话会误亮。只有 watchdog 停止/挂起且当前 agent 已结束时才清状态并响铃
 - 阻塞式 UI prompt（如 plan 评审）期间临时视为等待用户，不显示运行中；prompt 结束后按 agent/watchdog 真值恢复
