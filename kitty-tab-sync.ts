@@ -6,9 +6,10 @@ import * as path from "node:path";
 //   - pane 级 @pi_running：事实源（本 pane 的任务是否仍未完成；含 watchdog 续跑），pane 销毁自动清除。
 //   - pane 级 @pi_done：本 pane 上一轮已真正跑完且未被新一轮覆盖，pane 销毁自动清除。
 //   - window 级 @pi_win："⏳ "（有 pane 在跑，优先）/ "✅ "（全部跑完）/ ""，tmux/byobu 窗口栏逐窗口展示。
-//   - session 级 @pi_total："⏳ N "（本 session 未完成的任务总数），kitty tab 标题用。
+//   - session 级 @pi_total："⏳N ✅M "（本 session 运行中 / 已完成待关注的任务数），kitty tab 标题用。
 //     放 session 级是关键：新开的 tmux 窗口不需要等下一次广播就能在标题里看到总数。
-// 跑完时向 tty 发 BEL：kitty 的 bell_on_tab 会给「未聚焦窗口」的 tab 加铃铛（响铃模式）。
+//     ✅ = 「跑完但还没看过」；切到该 window 时由 tmux-pi-ack.py 清除（tmux.conf 的 after-select-* hook）。
+// 不再发 BEL：kitty 的 🔔 是 OS window 级、任何程序的 bell 都会误触发，且与 ✅M 语义重复。
 // 已知边缘情形（SIGKILL / move-pane 跨 session）计数暂时偏差，但下次任意事件重算即自愈。
 //
 // 所有对 tmux 的「写」都经由 StatusSink：本机由 TmuxStatusSink 用 CLI 实现。
@@ -52,7 +53,7 @@ class TmuxStatusSink implements StatusSink {
     this.cmd(["set", "-wq", "-t", windowId, "@pi_win", text]);
   }
 
-  // 会话级总数：kitty tab 标题用；放 session 级，新开的 tmux 窗口无需等广播即能显示
+  // 会话级计数：kitty tab 标题用（⏳ 运行中 / ✅ 已完成待关注）；放 session 级，新开的 tmux 窗口无需等广播即能显示
   setSessionTotal(sessionId: string, text: string): void {
     this.cmd(["set", "-t", sessionId, "@pi_total", text]);
   }
@@ -89,7 +90,7 @@ let watchdogInterrupted = false;
 let hasRunOnce = false;
 // 阻塞式 UI prompt 期间已临时置 idle 的标志（让重复 start/end 幂等）。
 let pausedByPrompt = false;
-// 已实际写入 tmux/标题的 effective 状态，避免重复写与重复响铃。
+// 已实际写入 tmux/标题的 effective 状态，避免重复写。
 let isMarkedRunning = false;
 // pi 进程正在退出（cleanupOnExit）：退出不是「跑完」，不得置 ✅，且需强制清掉旧的 ✅。
 let quitting = false;
@@ -119,9 +120,18 @@ function readPaneRunning(): boolean {
   } catch { return false; }
 }
 
-// 一次 list-panes 同时算出「每个窗口跑没跑」和「本 session 运行中总数」：
+// 会话计数文本，与 tmux-pi-ack.py 的 session_total() 保持一致（改一处要同步另一处）：
+//   "⏳N ✅M "，为 0 的部分省略，全 0 时为空串。
+function sessionTotalText(running: number, done: number): string {
+  const parts: string[] = [];
+  if (running > 0) parts.push(`⏳${running}`);
+  if (done > 0) parts.push(`✅${done}`);
+  return parts.length > 0 ? `${parts.join(" ")} ` : "";
+}
+
+// 一次 list-panes 同时算出「每个窗口跑没跑」和「本 session 的运行中 / 待关注数」：
 //   @pi_win   = "⏳ " / "✅ " / ""（window 级，tmux 窗口栏逐窗口；running 优先于 done）
-//   @pi_total = "⏳ N "（session 级，kitty tab 标题；放 session 级后新窗口自动继承）
+//   @pi_total = "⏳N ✅M "（session 级，kitty tab 标题；放 session 级后新窗口自动继承）
 // 并发写为 last-writer-wins，偏差窗口毫秒级，下次任意事件自愈。
 function broadcastStatus() {
   const pane = process.env.TMUX_PANE;
@@ -136,20 +146,25 @@ function broadcastStatus() {
     // "@29  1"，再按 /\s+/ split 会把 done 的值挤到 running 位上，把「已完成」误读成
     // 「运行中」——窗口永远 ⏳、@pi_total 也永远偏高。按字面分隔符 split 则保留空字段。
     const perWindow = new Map<string, WindowStatus>();
+    let runningTotal = 0;
+    let doneTotal = 0;
     for (const line of execFileSync(
       "tmux", ["list-panes", "-s", "-t", sessionId, "-F", "#{window_id}|#{@pi_running}|#{@pi_done}"],
       { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }
     ).split("\n")) {
       const [windowId, runningFlag, doneFlag] = line.split("|");
       if (!windowId) continue;
+      const running = runningFlag === "1";
+      const done = doneFlag === "1";
+      if (running) runningTotal += 1;
+      if (done) doneTotal += 1;
       const current = perWindow.get(windowId);
-      if (runningFlag === "1") perWindow.set(windowId, "running");
-      else if (doneFlag === "1" && current !== "running") perWindow.set(windowId, "done");
+      if (running) perWindow.set(windowId, "running");
+      else if (done && current !== "running") perWindow.set(windowId, "done");
       else if (!current) perWindow.set(windowId, "idle");
     }
 
-    const total = [...perWindow.values()].filter((status) => status === "running").length;
-    sink.setSessionTotal(sessionId, total > 0 ? `⏳ ${total} ` : "");
+    sink.setSessionTotal(sessionId, sessionTotalText(runningTotal, doneTotal));
     for (const [windowId, status] of perWindow) {
       sink.setWindowStatus(windowId, status);
     }
@@ -173,11 +188,6 @@ function updateStatus(running: boolean, done: boolean) {
     const statusTag = running ? "⏳ " : done ? "✅ " : "";
     process.stdout.write(`\x1b]2;${statusTag}${folder}\x07`);
   }
-
-  // 跑完响铃：kitty 的 bell_on_tab 会给未聚焦窗口的 tab 加铃铛（响铃模式）。
-  // 以 done 为准而非 !running：退出(quitting)、session_start 校正、UI prompt 暂停、
-  // 用户 Esc 打断都不是「跑完」，都不该响铃。
-  if (done) process.stdout.write("\x07");
 }
 
 function applyEffectiveState() {
@@ -201,7 +211,7 @@ function cleanupOnExit() {
   const wasRunning = isMarkedRunning;
   isMarkedRunning = false;
   if (wasRunning) {
-    // 正常 running→false：走常规路径清掉 pane 标记；@pi_done 因 quitting 保持空，故不响铃
+    // 正常 running→false：走常规路径清掉 pane 标记；@pi_done 因 quitting 保持空
     updateStatus(false, false);
   } else if (process.env.TMUX && process.env.TMUX_PANE) {
     // 已经处于 done/idle：applyEffectiveState 会 early-return，必须强制清掉
@@ -215,7 +225,7 @@ function cleanupOnExit() {
 export default function (pi: ExtensionAPI) {
   // watchdog 是独立扩展：它在 agent_settled 后倒计时，再用 sendUserMessage 开新一轮。
   // 这里同步的是「watchdog 自己的状态」，不是 agent 状态：只有它知道本轮 settled 后
-  // 是否还会续跑，所以仅用来抑制提前判定完成/响铃（是否生效见 hasRunOnce 门控）。
+  // 是否还会续跑，所以仅用来抑制提前判定完成（是否生效见 hasRunOnce 门控）。
   pi.events.on("watchdog:state", (raw: unknown) => {
     const state = raw as { running?: unknown; interrupted?: unknown } | undefined;
     watchdogActive = Boolean(state?.running);
@@ -266,7 +276,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   // agent_settled 只表示 Pi 当前一轮已完全 settle；若 watchdog 仍 active，
-  // 它还会在倒计时后发消息续跑，所以此时保持 running，不提前响铃。
+  // 它还会在倒计时后发消息续跑，所以此时保持 running，不提前判定完成。
   pi.on("agent_settled" as any, async () => {
     agentRunning = false;
     applyEffectiveState();

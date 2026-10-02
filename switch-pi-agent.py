@@ -149,7 +149,7 @@ def get_kitty_tabs():
 # tmux list-panes 输出分隔符。不用 ":::"：窗口名用户可随手改（, 重命名），
 # 含 ":::" 会让整行被静默丢弃、agent 从 picker 里消失。
 _PANE_SEP = "\x1f"
-_PANE_FIELDS = 13
+_PANE_FIELDS = 12
 # 会撑破 fzf 行、让 --accept-nth 行号错位的控制字符
 _PANE_CTRL = re.compile(r"[\x00-\x1f\x7f]")
 
@@ -160,7 +160,7 @@ def parse_panes(output):
     字段与 tmux.conf 的状态栏逐格对齐。记录之间是换行，但窗口名可被用户
     随意改写、可能含换行，`splitlines()` 会把一行撑成两行导致字段错位。
     所以查询格式在末尾也多带一个分隔符，这里直接按分隔符切出全部字段、
-    再每 13 个一组重组：窗口名里的换行会留在字段内部（随后被 _PANE_CTRL
+    再每 12 个一组重组：窗口名里的换行会留在字段内部（随后被 _PANE_CTRL
     抹掉），不会影响分组对齐。
     """
     fields = [_PANE_CTRL.sub("", field) for field in output.split(_PANE_SEP)]
@@ -172,9 +172,8 @@ def parse_panes(output):
             win_idx,
             win_name,
             pane_cmd,
-            pi_win,
-            bell,
-            act,
+            pi_running,
+            pi_done,
             n_wins,
             fmt,
             repo,
@@ -188,9 +187,8 @@ def parse_panes(output):
                 "win_idx": int(win_idx),
                 "win_name": win_name,
                 "pane_cmd": pane_cmd,
-                "pi_win": pi_win,
-                "bell": bell == "1",
-                "act": act == "1",
+                "pi_running": pi_running == "1",
+                "pi_done": pi_done == "1",
                 "sess_win_count": int(n_wins),
                 "fmt": fmt,
                 "repo": repo,
@@ -279,10 +277,9 @@ def collect_agents():
                         client_tty_by_tab[kitty_panes[p]["tab_id"]] = parts[1]
                     break
 
-    # tmux pane 信息（pane_pid 索引）。字段与 tmux.conf 的状态栏逐格对齐：
-    # 窗口序号 / @pi_win（⏳✅）/ bell·activity / @pi_win_fmt（名称@位置）/ @pi_repo。
-    # @pi_repo 与 tmux.conf 中 kitty 标题使用的项目名是同一事实源，供 picker
-    # 判断 cwd 是否只是父节点已经显示过的项目名。
+    # tmux pane 信息（pane_pid 索引）。状态取 pane 级 @pi_running / @pi_done
+    # （而不是窗口级 @pi_win 投影）：同一个 window 多个 pane 时才能分辨各自状态。
+    # 另取 @pi_win_fmt（名称@位置）/ @pi_repo（项目名，供 cwd 去重）。
     # 注意 `#()` 在 list-panes 里不执行，enclave 窗口的 @pi_win_fmt 只剩 "@位置"，
     # 真实应用名由 win_label() 另调 helper 补上。
     out = run(
@@ -298,9 +295,8 @@ def collect_agents():
                     "#{window_index}",
                     "#{window_name}",
                     "#{pane_current_command}",
-                    "#{@pi_win}",
-                    "#{window_bell_flag}",
-                    "#{window_activity_flag}",
+                    "#{@pi_running}",
+                    "#{@pi_done}",
                     "#{session_windows}",
                     "#{E:@pi_win_fmt}",
                     "#{E:@pi_repo}",
@@ -309,7 +305,7 @@ def collect_agents():
                 )
             )
             # 末尾分隔符让记录边界的换行落在下一字段开头，parse_panes 才能按
-            # 固定 13 个一组切开；详见 parse_panes 文档
+            # 固定 12 个一组切开；详见 parse_panes 文档
             + _PANE_SEP,
         ]
     )
@@ -350,9 +346,8 @@ def collect_agents():
                 "win_idx": t_info["win_idx"] if t_info else 0,
                 "sess_win_count": t_info["sess_win_count"] if t_info else 1,
                 "pane_cmd": t_info["pane_cmd"] if t_info else "",
-                "pi_win": t_info["pi_win"] if t_info else "",
-                "bell": t_info["bell"] if t_info else False,
-                "act": t_info["act"] if t_info else False,
+                "pi_running": t_info["pi_running"] if t_info else False,
+                "pi_done": t_info["pi_done"] if t_info else False,
                 "fmt": t_info["fmt"] if t_info else "",
                 "repo": t_info["repo"] if t_info else "",
                 "pane_tmux_pid": t_info["pane_pid"] if t_info else 0,
@@ -366,12 +361,11 @@ def collect_agents():
     return agents
 
 
-# 与 tmux.conf 的 window-status-format 保持一致：窗口标签黄、bell ◉ 红、activity ● 青
+# 与 tmux.conf 的 window-status-format 保持一致：状态标记与窗口标签同用黄色（⏳/✅ 是 emoji，
+# 实际颜色由字体决定，这里只为与状态栏的 #[fg=yellow] 保持一致）。
 _TMUX_HELPER = os.path.expanduser("~/.local/bin/tmux-pane-command.py")
 _ANSI_RESET = "\x1b[0m"
 _ANSI_YELLOW = "\x1b[33m"
-_ANSI_RED = "\x1b[31m"
-_ANSI_CYAN = "\x1b[36m"
 
 
 def win_label(agent):
@@ -405,6 +399,19 @@ def cwd_suffix(folder, label, repo="", has_tab=False):
     return f"cwd:{folder}"
 
 
+def pane_marker(agent):
+    """pane 级三态标记：⏳ 运行中 / ✅ 已完成待关注 / 空。
+
+    直接取 pane 级 @pi_running / @pi_done，而不是窗口级聚合的 @pi_win——同一个
+    window 里若一个 pane 在跑、另一个已完成，窗口级只能给出 ⏳，会掩盖后者。
+    """
+    if agent.get("pi_running"):
+        return "⏳ "
+    if agent.get("pi_done"):
+        return "✅ "
+    return ""
+
+
 def format_child(agent, show_session=True):
     """picker 子行：显示可定位上下文、标记和名称@位置。
 
@@ -417,7 +424,7 @@ def format_child(agent, show_session=True):
     index = f"{agent['win_idx']}: " if agent["sess_win_count"] > 1 else " "
     session = f"{agent['session']}:" if show_session else ""
     prefix = f"   └ {agent['pid']:<6} {session}{index}"
-    marker = agent["pi_win"]  # "⏳ " / "✅ " / ""，取值自带尾随空格，不要再补
+    marker = pane_marker(agent)
     label = win_label(agent)
     cwd = cwd_suffix(
         agent["folder"],
@@ -425,21 +432,12 @@ def format_child(agent, show_session=True):
         agent.get("repo", ""),
         bool(agent.get("tab_id")),
     )
-    light, light_ansi = "", ""
-    if agent["bell"]:
-        light, light_ansi = "◉", _ANSI_RED
-    elif agent["act"]:
-        light, light_ansi = "●", _ANSI_CYAN
-
     cwd_column = f"  {cwd}" if cwd else ""
-    text = f"{prefix}{marker}{label}" + (f" {light}" if light else "") + cwd_column
+    text = f"{prefix}{marker}{label}{cwd_column}"
     ansi = prefix
     if marker:
         ansi += f"{_ANSI_YELLOW}{marker}{_ANSI_RESET}"
-    ansi += label
-    if light:
-        ansi += f" {light_ansi}{light}{_ANSI_RESET}"
-    ansi += cwd_column
+    ansi += label + cwd_column
     return text, ansi
 
 
@@ -487,10 +485,18 @@ def build_rows(agents):
                 "agent": None,
             }
         )
-        # 按窗口序号排，与 tab 栏从左到右的顺序对齐（而不是按窗口名字母序）
+        # 组内排序：待关注（✅）最前、其次运行中（⏳）、最后空闲；同态内按窗口
+        # 序号排（与 tab 栏从左到右一致，而不是窗口名字母序）。组间顺序不变，
+        # 仍镜像 kitty tab 栏。
         for a in sorted(
             grp["agents"],
-            key=lambda item: (item["session"], item["win_idx"], item["pid"]),
+            key=lambda item: (
+                item["session"],
+                not item["pi_done"],
+                not item["pi_running"],
+                item["win_idx"],
+                item["pid"],
+            ),
         ):
             text, ansi = format_child(a, show_session=not bool(grp["tab_id"]))
             rows.append(
@@ -544,7 +550,12 @@ def main():
         return
 
     rows = build_rows(agents)
-    header = "选择 Pi Agent (↑/↓ 选择, Enter 跳转, Esc 取消) —— 按 Kitty Tab 分组"
+    running = sum(1 for a in agents if a["pi_running"])
+    done = sum(1 for a in agents if a["pi_done"])
+    header = (
+        "选择 Pi Agent (↑/↓ 选择, Enter 跳转, Esc 取消) —— "
+        f"⏳{running} 运行中 · ✅{done} 待关注 · 按 Kitty Tab 分组"
+    )
     # 回车时用 --accept-nth='{n}' 回传该行在输入里的序号（--no-sort 下即 rows 下标）。
     # 即便两个 tab 标题完全相同，也能精确定位到被选中的那一条，不依赖显示文本做唯一键。
     fzf_cmd = [

@@ -31,6 +31,7 @@ link "$root/tmux.conf" "$HOME/.byobu/keybindings.tmux"
 # 运行时 helper 与 Pi 扩展
 link "$root/switch-pi-agent.py" "$HOME/.local/bin/switch-pi-agent.py"
 link "$root/tmux-pane-command.py" "$HOME/.local/bin/tmux-pane-command.py"
+link "$root/tmux-pi-ack.py" "$HOME/.local/bin/tmux-pi-ack.py"
 link "$root/kitty-tab-sync.ts" "$HOME/.pi/agent/extensions/kitty-tab-sync.ts"
 
 cat <<'EOF'
