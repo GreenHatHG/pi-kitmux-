@@ -80,6 +80,10 @@ let agentRunning = false;
 // 注意这是「watchdog 的状态」而非「agent 的状态」：空会话里它会自行 armed，
 // 因此只在下面 hasRunOnce 为真时，才把它当作「settled 后仍会续跑」的抑制项。
 let watchdogActive = false;
+// watchdog 广播的「上一轮被用户按 Esc 打断」：此时它仍 armed（running=true），
+// 但本次空闲不会再续跑，所以不能算作「settled 后仍会续跑」的抑制项，
+// 也不能把这次结束当成「真正跑完」。只有用户发下一条真实消息时 watchdog 才会清回 false。
+let watchdogInterrupted = false;
 // 本进程是否已经跑过至少一轮。用于把 watchdogActive 收窄到真正有活可续的场景，
 // 否则新开/恢复的空会话会因为 watchdog 自启动而误亮 ⏳。session_start 时复位。
 let hasRunOnce = false;
@@ -167,20 +171,22 @@ function updateStatus(running: boolean, done: boolean) {
     process.stdout.write(`\x1b]2;${statusTag}${folder}\x07`);
   }
 
-  // 跑完响铃：kitty 的 bell_on_tab 会给未聚焦窗口的 tab 加铃铛（响铃模式）
-  if (!running) process.stdout.write("\x07");
+  // 跑完响铃：kitty 的 bell_on_tab 会给未聚焦窗口的 tab 加铃铛（响铃模式）。
+  // 以 done 为准而非 !running：退出(quitting)、session_start 校正、UI prompt 暂停、
+  // 用户 Esc 打断都不是「跑完」，都不该响铃。
+  if (done) process.stdout.write("\x07");
 }
 
 function applyEffectiveState() {
   // UI prompt 表示 AI 正在等人，优先。
   // watchdogActive 只在已经跑过一轮后生效：那时它代表「本轮 settled 后 watchdog 还会续跑」；
   // 跑过之前它只说明 watchdog 自我 armed（空会话/恢复会话），与 agent 是否在跑无关。
-  const running = !pausedByPrompt && (agentRunning || (watchdogActive && hasRunOnce));
+  const running = !pausedByPrompt && (agentRunning || (watchdogActive && hasRunOnce && !watchdogInterrupted));
   if (running === isMarkedRunning) return;
   isMarkedRunning = running;
-  // 只有「真正跑完」才置 ✅：等待用户 prompt、pi 退出、session_start 的
-  // 状态校正都不是完成，均抑制。
-  const done = !running && !pausedByPrompt && !quitting && !suppressDone;
+  // 只有「真正跑完」才置 ✅：等待用户 prompt、pi 退出、session_start 的状态校正，
+  // 以及用户按 Esc 打断（watchdog 不再续跑、这一轮并未真正跑完）都不是完成，均抑制。
+  const done = !running && !pausedByPrompt && !quitting && !suppressDone && !watchdogInterrupted;
   updateStatus(running, done);
 }
 
@@ -192,7 +198,7 @@ function cleanupOnExit() {
   const wasRunning = isMarkedRunning;
   isMarkedRunning = false;
   if (wasRunning) {
-    // 正常 running→false：走常规路径（含响铃），@pi_done 因 quitting 保持空
+    // 正常 running→false：走常规路径清掉 pane 标记；@pi_done 因 quitting 保持空，故不响铃
     updateStatus(false, false);
   } else if (process.env.TMUX && process.env.TMUX_PANE) {
     // 已经处于 done/idle：applyEffectiveState 会 early-return，必须强制清掉
@@ -208,7 +214,9 @@ export default function (pi: ExtensionAPI) {
   // 这里同步的是「watchdog 自己的状态」，不是 agent 状态：只有它知道本轮 settled 后
   // 是否还会续跑，所以仅用来抑制提前判定完成/响铃（是否生效见 hasRunOnce 门控）。
   pi.events.on("watchdog:state", (raw: unknown) => {
-    watchdogActive = Boolean((raw as { running?: unknown } | undefined)?.running);
+    const state = raw as { running?: unknown; interrupted?: unknown } | undefined;
+    watchdogActive = Boolean(state?.running);
+    watchdogInterrupted = Boolean(state?.interrupted);
     applyEffectiveState();
   });
 
@@ -230,6 +238,7 @@ export default function (pi: ExtensionAPI) {
     agentRunning = busy;
     hasRunOnce = busy;
     watchdogActive = false;
+    watchdogInterrupted = false;
     pausedByPrompt = false;
     // 保留 pane 事实源不变，交由下方 setTimeout 的校正路径决定是否清除
     isMarkedRunning = factRunning;
@@ -240,6 +249,7 @@ export default function (pi: ExtensionAPI) {
     // query 无响应，apply 会清掉 reload/异常退出留下的旧 pane 标记。
     setTimeout(() => {
       watchdogActive = false;
+      watchdogInterrupted = false;
       pi.events.emit("watchdog:state:query");
       applyEffectiveState();
       suppressDone = false; // 必须在 apply 之后复位，否则校正路径可能误置 ✅

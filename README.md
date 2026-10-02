@@ -51,7 +51,7 @@ Pi Coding Agent 的终端多路复用工具集：用 `fzf` 选择并跳转到运
 - pane 级 `@pi_running` / `@pi_done` 是事实源（pane 销毁自动清除，不残留）：前者表示本 pane 仍在处理，后者表示上一轮已真正跑完且未被新一轮覆盖
 - 窗口级 `@pi_win`：tmux/byobu 窗口栏每格显示三态——有 pane 在跑为 `⏳`（优先于 ✅）、全部跑完为 `✅`、否则为空（均不带数字）；`✅` 持续到该 pane 下一轮运行、出现阻塞式 prompt、切换 session（`/new` / `/resume` / `/fork`）或进程退出
 - 会话级 `@pi_total`：本 session 运行中的 agent 总数 `⏳ N`，供 kitty tab 标题（`set-titles-string`）；放 session 级，新开的 tmux 窗口也能立即显示
-- 与 `pi-extension-watchdog` 通过 `pi.events` 同步生命周期：watchdog 的 `running` 只表示它自己处于监控/armed 状态（空会话自启动时也会为真），因此仅在**本进程已跑过至少一轮**后，才用它作为「单轮 `agent_settled` 后仍会续跑」的抑制项继续保持 ⏳；否则空会话会误亮。只有 watchdog 停止/挂起且当前 agent 已结束时才清状态并响铃
+- 与 `pi-extension-watchdog` 通过 `pi.events` 同步生命周期：watchdog 的 `running` 只表示它自己处于监控/armed 状态（空会话自启动时也会为真），因此仅在**本进程已跑过至少一轮**后，才用它作为「单轮 `agent_settled` 后仍会续跑」的抑制项继续保持 ⏳；否则空会话会误亮。用户按 `Esc` 中止一轮时 watchdog 会广播 `interrupted: true`（此时 `running` 仍为真）：表示本次空闲不会再续跑，故立即清掉 ⏳，且不置 ✅、不响铃——这一轮并非「真正跑完」；等用户发下一条真实消息、watchdog 清回 `interrupted: false` 后恢复正常。只有 watchdog 停止/挂起且当前 agent 已结束时才置 ✅ 并响铃
 - 阻塞式 UI prompt（如 plan 评审）期间临时视为等待用户，不显示运行中；prompt 结束后按 agent/watchdog 真值恢复
 - 跑完时发送 bell（`\a`）：kitty 的 `bell_on_tab` 会给未聚焦窗口的 tab 加铃铛
 - 所有对 tmux 的写调用收在 `StatusSink` 后面，便于将来接远端 sink
