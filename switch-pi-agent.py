@@ -149,7 +149,7 @@ def get_kitty_tabs():
 # tmux list-panes 输出分隔符。不用 ":::"：窗口名用户可随手改（, 重命名），
 # 含 ":::" 会让整行被静默丢弃、agent 从 picker 里消失。
 _PANE_SEP = "\x1f"
-_PANE_FIELDS = 12
+_PANE_FIELDS = 13
 # 会撑破 fzf 行、让 --accept-nth 行号错位的控制字符
 _PANE_CTRL = re.compile(r"[\x00-\x1f\x7f]")
 
@@ -160,7 +160,7 @@ def parse_panes(output):
     字段与 tmux.conf 的状态栏逐格对齐。记录之间是换行，但窗口名可被用户
     随意改写、可能含换行，`splitlines()` 会把一行撑成两行导致字段错位。
     所以查询格式在末尾也多带一个分隔符，这里直接按分隔符切出全部字段、
-    再每 12 个一组重组：窗口名里的换行会留在字段内部（随后被 _PANE_CTRL
+    再每 13 个一组重组：窗口名里的换行会留在字段内部（随后被 _PANE_CTRL
     抹掉），不会影响分组对齐。
     """
     fields = [_PANE_CTRL.sub("", field) for field in output.split(_PANE_SEP)]
@@ -177,6 +177,7 @@ def parse_panes(output):
             act,
             n_wins,
             fmt,
+            repo,
             pane_id,
             ppid,
         ) = fields[i : i + _PANE_FIELDS]
@@ -192,6 +193,7 @@ def parse_panes(output):
                 "act": act == "1",
                 "sess_win_count": int(n_wins),
                 "fmt": fmt,
+                "repo": repo,
                 "pane_pid": int(ppid),
                 "pane_id": pane_id,
             }
@@ -278,7 +280,9 @@ def collect_agents():
                     break
 
     # tmux pane 信息（pane_pid 索引）。字段与 tmux.conf 的状态栏逐格对齐：
-    # 窗口序号 / @pi_win（⏳✅）/ bell·activity / @pi_win_fmt（名称@位置）。
+    # 窗口序号 / @pi_win（⏳✅）/ bell·activity / @pi_win_fmt（名称@位置）/ @pi_repo。
+    # @pi_repo 与 tmux.conf 中 kitty 标题使用的项目名是同一事实源，供 picker
+    # 判断 cwd 是否只是父节点已经显示过的项目名。
     # 注意 `#()` 在 list-panes 里不执行，enclave 窗口的 @pi_win_fmt 只剩 "@位置"，
     # 真实应用名由 win_label() 另调 helper 补上。
     out = run(
@@ -299,12 +303,13 @@ def collect_agents():
                     "#{window_activity_flag}",
                     "#{session_windows}",
                     "#{E:@pi_win_fmt}",
+                    "#{E:@pi_repo}",
                     "#{pane_id}",
                     "#{pane_pid}",
                 )
             )
             # 末尾分隔符让记录边界的换行落在下一字段开头，parse_panes 才能按
-            # 固定 12 个一组切开；详见 parse_panes 文档
+            # 固定 13 个一组切开；详见 parse_panes 文档
             + _PANE_SEP,
         ]
     )
@@ -349,6 +354,7 @@ def collect_agents():
                 "bell": t_info["bell"] if t_info else False,
                 "act": t_info["act"] if t_info else False,
                 "fmt": t_info["fmt"] if t_info else "",
+                "repo": t_info["repo"] if t_info else "",
                 "pane_tmux_pid": t_info["pane_pid"] if t_info else 0,
                 "pane_id": t_info["pane_id"] if t_info else "",
                 "win_id": t_info["win_id"] if t_info else "",
@@ -384,37 +390,56 @@ def win_label(agent):
     return f"{name or agent['win_name']}@{fmt.split('@', 1)[1]}"
 
 
-def format_child(agent):
-    """picker 子行：与 tmux 状态栏同一套「序号 + 标记 + 名称@位置 + 灯」。
+def cwd_suffix(folder, label, repo="", has_tab=False):
+    """返回 picker 行尾的 cwd 补充信息，避免重复父节点已有的项目名。
+
+    `repo` 直接来自 tmux 的 @pi_repo，与 Kitty tab 标题使用同一事实源；
+    不从渲染后的 tab 标题反解析项目名。无 Kitty tab 时没有父节点可去重，
+    因此只应用 worktree 标签这一条规则并保留 cwd 信息。
+    """
+    location = label.rsplit("@", 1)[1] if "@" in label else ""
+    if location.startswith("wt:") and location[3:] == folder:
+        return ""
+    if has_tab and repo and folder == repo:
+        return ""
+    return f"cwd:{folder}"
+
+
+def format_child(agent, show_session=True):
+    """picker 子行：显示可定位上下文、标记和名称@位置。
 
     返回 (text, ansi)：text 无色（供测试与回匹配），ansi 喂给 fzf --ansi。
-    序号前缀只在 session 多于一个窗口时显示，与 tmux.conf 的
-    `#{?#{e|>:#{session_windows},1},#I: ,}` 一致（单窗口退为一个空格，避免
-    `win-5:⏳` 这种粘连）；bell（◉ 红）优先于 activity（● 青），与 tmux 的
-    `#{?window_bell_flag,◉,#{?window_activity_flag,●,}}` 一致。
+    Kitty Tab 组已在父节点显示 session 时，show_session 为 False，子行只保留
+    必要的窗口号；无 Kitty Tab 的组仍保留 session 作为定位信息。窗口号只在
+    session 多于一个窗口时显示，与 tmux.conf 的
+    `#{?#{e|>:#{session_windows},1},#I: ,}` 一致。
     """
     index = f"{agent['win_idx']}: " if agent["sess_win_count"] > 1 else " "
-    prefix = f"   └ {agent['pid']:<6} {agent['session']}:{index}"
+    session = f"{agent['session']}:" if show_session else ""
+    prefix = f"   └ {agent['pid']:<6} {session}{index}"
     marker = agent["pi_win"]  # "⏳ " / "✅ " / ""，取值自带尾随空格，不要再补
     label = win_label(agent)
+    cwd = cwd_suffix(
+        agent["folder"],
+        label,
+        agent.get("repo", ""),
+        bool(agent.get("tab_id")),
+    )
     light, light_ansi = "", ""
     if agent["bell"]:
         light, light_ansi = "◉", _ANSI_RED
     elif agent["act"]:
         light, light_ansi = "●", _ANSI_CYAN
 
-    text = (
-        f"{prefix}{marker}{label}"
-        + (f" {light}" if light else "")
-        + f"  {agent['folder']}"
-    )
+    cwd_column = f"  {cwd}" if cwd else ""
+    text = f"{prefix}{marker}{label}" + (f" {light}" if light else "") + cwd_column
     ansi = prefix
     if marker:
         ansi += f"{_ANSI_YELLOW}{marker}{_ANSI_RESET}"
     ansi += label
     if light:
         ansi += f" {light_ansi}{light}{_ANSI_RESET}"
-    ansi += f"  {agent['folder']}"
+    ansi += cwd_column
     return text, ansi
 
 
@@ -427,6 +452,7 @@ def build_rows(agents):
     - ansi: 带 ANSI 颜色的显示文本，喂给 fzf --ansi
     - tab_id: 所属 kitty tab（无则为空串）
     - agent: 仅子行有，指向原 agent dict
+    组头显示为「tab 标题 · session」（多 OS window 时前置 `[win N]`）；
     组顺序按 (OS window, tab 序号)，无 kitty tab 的组排在最后。
     """
     groups = {}
@@ -448,8 +474,10 @@ def build_rows(agents):
     for grp in sorted(groups.values(), key=lambda item: item["order"]):
         header = grp["title"]
         first = grp["agents"][0]
-        if grp["tab_id"] and first["win_count"] > 1:
-            header = f"[win {first['win_index']}] {header}"
+        if grp["tab_id"]:
+            header = f"{header} · {first['session']}"
+            if first["win_count"] > 1:
+                header = f"[win {first['win_index']}] {header}"
         rows.append(
             {
                 "kind": "tab",
@@ -464,7 +492,7 @@ def build_rows(agents):
             grp["agents"],
             key=lambda item: (item["session"], item["win_idx"], item["pid"]),
         ):
-            text, ansi = format_child(a)
+            text, ansi = format_child(a, show_session=not bool(grp["tab_id"]))
             rows.append(
                 {
                     "kind": "agent",

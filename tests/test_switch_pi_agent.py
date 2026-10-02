@@ -77,6 +77,7 @@ def _agent(**overrides: object) -> dict:
         "bell": False,
         "act": False,
         "fmt": "pi@main",
+        "repo": "repo",
         "pane_tmux_pid": 555,
         "tab_title": "1: repo",
         "tab_id": "10",
@@ -97,8 +98,9 @@ class BuildRowsTest(TestCase):
         a2 = _agent(pid=102, tab_id="10", tab_title="1: repo", win_name="server")
         rows = switch_pi_agent.build_rows([a1, a2])
         self.assertEqual([r["kind"] for r in rows], ["tab", "agent", "agent"])
-        self.assertEqual(rows[0]["text"], "1: repo")
+        self.assertEqual(rows[0]["text"], "1: repo · main")
         self.assertTrue(rows[1]["text"].lstrip().startswith("└"))
+        self.assertNotIn("main:", rows[1]["text"])
 
     def test_group_order_and_no_kitty_last(self) -> None:
         later = _agent(pid=1, tab_id="20", tab_title="2: x", tab_index=2, win_index=1)
@@ -108,12 +110,12 @@ class BuildRowsTest(TestCase):
         )
         rows = switch_pi_agent.build_rows([later, none, earlier])
         headers = [r["text"] for r in rows if r["kind"] == "tab"]
-        self.assertEqual(headers, ["1: y", "2: x", "No Kitty Tab"])
+        self.assertEqual(headers, ["1: y · main", "2: x · main", "No Kitty Tab"])
 
     def test_multi_window_header_prefix(self) -> None:
         a = _agent(win_count=2, win_index=2, tab_title="3: repo")
         rows = switch_pi_agent.build_rows([a])
-        self.assertEqual(rows[0]["text"], "[win 2] 3: repo")
+        self.assertEqual(rows[0]["text"], "[win 2] 3: repo · main")
 
     def test_duplicate_tab_titles_stay_distinct(self) -> None:
         # 两个 tab 渲染出完全相同的标题时，仍是两条独立行（由行号回传消歧义）
@@ -121,7 +123,9 @@ class BuildRowsTest(TestCase):
         a2 = _agent(pid=22, tab_id="20", tab_title="1: repo", tab_index=2)
         rows = switch_pi_agent.build_rows([a1, a2])
         headers = [r for r in rows if r["kind"] == "tab"]
-        self.assertEqual([h["text"] for h in headers], ["1: repo", "1: repo"])
+        self.assertEqual(
+            [h["text"] for h in headers], ["1: repo · main", "1: repo · main"]
+        )
         self.assertEqual([h["tab_id"] for h in headers], ["10", "20"])
 
     def test_children_sorted_by_window_index(self) -> None:
@@ -153,6 +157,7 @@ class ParsePanesTest(TestCase):
             "1",
             "4",
             "@wt:2",
+            "repo",
             "%32",
             "28556",
         ]
@@ -171,9 +176,10 @@ class ParsePanesTest(TestCase):
         self.assertTrue(pane["act"])
         self.assertEqual(pane["sess_win_count"], 4)
         self.assertEqual(pane["fmt"], "@wt:2")
+        self.assertEqual(pane["repo"], "repo")
 
     def test_window_name_with_colon_separator_is_not_dropped(self) -> None:
-        # 旧实现用 ":::" 分隔且要求字段数恰好 12，窗口名含 ":::" 会静默丢行
+        # 旧实现用 ":::" 分隔且要求字段数恰好 13，窗口名含 ":::" 会静默丢行
         line = self._record((3, "a:::b"), (9, "a:::b@main"))
         panes = switch_pi_agent.parse_panes(line)
         self.assertEqual(panes[28556]["win_name"], "a:::b")
@@ -184,7 +190,7 @@ class ParsePanesTest(TestCase):
         output = (
             self._record((3, "a\nb"))
             + "\n"
-            + self._record((0, "win-9"), (3, "zsh"), (10, "%36"), (11, "56470"))
+            + self._record((0, "win-9"), (3, "zsh"), (11, "%36"), (12, "56470"))
         )
         panes = switch_pi_agent.parse_panes(output)
         self.assertEqual(panes[28556]["win_name"], "ab")
@@ -194,14 +200,14 @@ class ParsePanesTest(TestCase):
     def test_ignores_empty_and_malformed_trailing_fields(self) -> None:
         self.assertEqual(switch_pi_agent.parse_panes(""), {})
         self.assertEqual(switch_pi_agent.parse_panes("\n"), {})
-        # 不足 12 个字段的残行不应崩，也不应产出半个 pane
+        # 不足 13 个字段的残行不应崩，也不应产出半个 pane
         self.assertEqual(switch_pi_agent.parse_panes("a\x1fb\x1fc"), {})
 
     def test_multiple_records_keep_their_own_fields(self) -> None:
         output = (
             self._record()
             + "\n"
-            + self._record((0, "win-9"), (3, "zsh"), (10, "%36"), (11, "56470"))
+            + self._record((0, "win-9"), (3, "zsh"), (11, "%36"), (12, "56470"))
         )
         panes = switch_pi_agent.parse_panes(output)
         self.assertEqual(sorted(panes), [28556, 56470])
@@ -238,6 +244,41 @@ class WinLabelTest(TestCase):
             self.assertEqual(switch_pi_agent.win_label(agent), "enclave@main")
 
 
+class CwdSuffixTest(TestCase):
+    def test_project_root_omits_repeated_basename(self) -> None:
+        self.assertEqual(
+            switch_pi_agent.cwd_suffix("repo", "pi@main", "repo", True), ""
+        )
+
+    def test_worktree_root_omits_repeated_basename(self) -> None:
+        self.assertEqual(switch_pi_agent.cwd_suffix("1", "pi@wt:1", "repo", True), "")
+
+    def test_worktree_subdirectory_keeps_cwd(self) -> None:
+        self.assertEqual(
+            switch_pi_agent.cwd_suffix("src", "pi@wt:1", "repo", True), "cwd:src"
+        )
+
+    def test_project_subdirectory_keeps_cwd(self) -> None:
+        self.assertEqual(
+            switch_pi_agent.cwd_suffix("src", "pi@main", "repo", True), "cwd:src"
+        )
+
+    def test_no_kitty_tab_keeps_cwd(self) -> None:
+        self.assertEqual(
+            switch_pi_agent.cwd_suffix("repo", "pi@main", "repo", False), "cwd:repo"
+        )
+
+    def test_missing_repo_keeps_cwd(self) -> None:
+        self.assertEqual(
+            switch_pi_agent.cwd_suffix("repo", "pi@main", "", True), "cwd:repo"
+        )
+
+    def test_label_names_with_at_sign_use_last_separator(self) -> None:
+        self.assertEqual(
+            switch_pi_agent.cwd_suffix("1", "worker@wt:1", "repo", True), ""
+        )
+
+
 class FormatChildTest(TestCase):
     def test_mirrors_status_bar_cell(self) -> None:
         # 「序号 + ⏳ + 名称@位置 + 灯」，与 tmux.conf 的 window-status-format 同构
@@ -250,15 +291,18 @@ class FormatChildTest(TestCase):
             fmt="pi@main",
             act=True,
         )
-        text, ansi = switch_pi_agent.format_child(agent)
-        self.assertTrue(text.startswith("   └ 42     win-5:2: ⏳ pi@main ●"))
+        text, ansi = switch_pi_agent.format_child(agent, show_session=False)
+        self.assertTrue(text.startswith("   └ 42     2: ⏳ pi@main ●"))
         self.assertIn("\x1b[33m⏳ \x1b[0mpi@main", ansi)
         self.assertIn("\x1b[36m●\x1b[0m", ansi)  # activity = cyan
 
     def test_index_prefix_hidden_for_single_window_session(self) -> None:
-        text, _ = switch_pi_agent.format_child(_agent(sess_win_count=1, win_idx=7))
-        self.assertIn("main: ", text)
-        self.assertNotIn("main:7", text)
+        text, _ = switch_pi_agent.format_child(
+            _agent(sess_win_count=1, win_idx=7), show_session=False
+        )
+        self.assertIn("     ⏳", text)
+        self.assertNotIn("main:", text)
+        self.assertNotIn("7:", text)
 
     def test_bell_wins_over_activity(self) -> None:
         agent = _agent(bell=True, act=True, pi_win="✅ ")
@@ -268,6 +312,40 @@ class FormatChildTest(TestCase):
         self.assertIn("\x1b[31m◉\x1b[0m", ansi)  # bell = red
 
     def test_empty_marker_adds_no_color_codes(self) -> None:
-        text, ansi = switch_pi_agent.format_child(_agent(pi_win=""))
-        self.assertIn("main: pi@main  repo", text)
+        text, ansi = switch_pi_agent.format_child(_agent(pi_win=""), show_session=False)
+        self.assertTrue(text.endswith("pi@main"))
+        self.assertNotIn("cwd:", text)
         self.assertNotIn("\x1b[33m", ansi)
+
+    def test_no_kitty_tab_keeps_session_in_child(self) -> None:
+        text, _ = switch_pi_agent.format_child(
+            _agent(folder="repo", fmt="pi@main", pi_win="", tab_id=""),
+            show_session=True,
+        )
+        self.assertIn("main: pi@main", text)
+
+    def test_worktree_root_does_not_repeat_folder(self) -> None:
+        text, ansi = switch_pi_agent.format_child(
+            _agent(folder="1", fmt="pi@wt:1", pi_win="")
+        )
+        self.assertTrue(text.endswith("pi@wt:1"))
+        self.assertTrue(ansi.endswith("pi@wt:1"))
+        self.assertNotIn("cwd:", text)
+
+    def test_worktree_subdirectory_labels_folder(self) -> None:
+        text, _ = switch_pi_agent.format_child(
+            _agent(folder="src", fmt="pi@wt:1", pi_win="")
+        )
+        self.assertTrue(text.endswith("pi@wt:1  cwd:src"))
+
+    def test_project_subdirectory_labels_folder(self) -> None:
+        text, _ = switch_pi_agent.format_child(
+            _agent(folder="src", fmt="pi@main", pi_win="")
+        )
+        self.assertTrue(text.endswith("pi@main  cwd:src"))
+
+    def test_no_kitty_tab_keeps_folder_context(self) -> None:
+        text, _ = switch_pi_agent.format_child(
+            _agent(folder="repo", fmt="pi@main", pi_win="", tab_id="")
+        )
+        self.assertTrue(text.endswith("pi@main  cwd:repo"))

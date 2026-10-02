@@ -24,7 +24,7 @@ Pi Coding Agent 的终端多路复用工具集：用 `fzf` 选择并跳转到运
    - Kitty：`kitty @ ls` 列出所有 tab 及其 pane 的 pid；tab 标题按 `kitty.conf` 的 `tab_title_template` 动态渲染，与 tab bar 显示一致
    - Byobu/tmux：`tmux list-panes -a` 按 `pane_pid` 索引，结合祖先链把 Agent 映射到 session / window / pane
    - 工作目录：对匹配到的少量 pid 用 `lsof -d cwd` 查询
-3. **选择跳转**：`fzf` 列表按 Kitty Tab 分组，组头是 tab 标题，组内每个 agent 一行；子行的 tmux 部分与状态栏逐格对齐 ——「`session:窗口号: ⏳/✅ 名称@位置 ◉/●`」，其中 `⏳/✅`、`@位置`、红 `◉`（bell）/青 `●`（activity）都由 tmux 的 `@pi_win` / `@pi_win_fmt` / `window_bell_flag` / `window_activity_flag` 直接取值，enclave 窗口缺失的应用名由 `tmux-pane-command.py` 现补，故不会与 tab 栏漂移；子行按窗口号排序，顺序也与 tab 栏一致。选中组头只聚焦该 tab，选中子行则同时切到具体 session/window/pane（只动目标 client，不会误动当前 tab 自己的 client）。
+3. **选择跳转**：`fzf` 列表按 Kitty Tab 分组，组头是「tab 标题 · session」，组内每个 agent 一行；子行的 tmux 部分与状态栏逐格对齐 ——「`窗口号: ⏳/✅ 名称@位置 ◉/●`」，其中 `⏳/✅`、`@位置`、红 `◉`（bell）/青 `●`（activity）都由 tmux 的 `@pi_win` / `@pi_win_fmt` / `window_bell_flag` / `window_activity_flag` 直接取值，enclave 窗口缺失的应用名由 `tmux-pane-command.py` 现补，故不会与 tab 栏漂移；session 已上移到父节点，子行按窗口号排序，顺序也与 tab 栏一致。选中组头只聚焦该 tab，选中子行则同时切到具体 session/window/pane（只动目标 client，不会误动当前 tab 自己的 client）。无 Kitty Tab 的兜底组仍在子行保留 session 名。
 
 安全细节：
 
@@ -79,8 +79,9 @@ tmux source-file ~/.tmux.conf
 ```
 
 `fzf` 交互：列表按 Kitty Tab 分组，组头是该 tab 的标题，组内 agent 缩进列出，子行形如
-`└ 73714  win-2:2: ⏳ pi@main ◉  pi-kitmux`（`session:窗口号: 标记 名称@位置 灯 目录`，
-与底部 tab 栏一致；单窗口 session 不显示窗口号）。`↑/↓` 选择、`Enter` 跳转
+`1: pi-kitmux · win-2`
+`└ 73714  2: ⏳ pi@main ◉`（`父节点：项目目录 · session；子节点：窗口号: 标记 名称@位置 灯 [cwd:<目录>]`，
+与底部 tab 栏一致；单窗口 session 不显示窗口号）。父节点已经显示项目名时，子行不重复显示 cwd；只有项目子目录、无法取得父节点项目名，或无 Kitty Tab 时才显示 `cwd:<目录>`。worktree 根目录如果 `@wt:<名称>` 已经表达了 cwd 名称，也会省略。`↑/↓` 选择、`Enter` 跳转
 （选中组头只聚焦该 tab，选中子行则同时切到具体 session/window/pane）、`Esc` 取消。
 输入查询词过滤时，未命中的组头会一并隐藏。未检测到 Agent 时会提示退出。
 
