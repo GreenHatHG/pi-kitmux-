@@ -131,13 +131,16 @@ function broadcastStatus() {
   try {
     const sessionId = getSessionId();
     if (!sessionId) return;
-    // 逐窗口聚合三态：只要有 pane 在跑就是 running；否则只要有 pane done 就是 done
+    // 逐窗口聚合三态：只要有 pane 在跑就是 running；否则只要有 pane done 就是 done。
+    // 用 "|" 而非空格分隔：空字段（比如 running 为空、done=1）在空格 join 后是
+    // "@29  1"，再按 /\s+/ split 会把 done 的值挤到 running 位上，把「已完成」误读成
+    // 「运行中」——窗口永远 ⏳、@pi_total 也永远偏高。按字面分隔符 split 则保留空字段。
     const perWindow = new Map<string, WindowStatus>();
     for (const line of execFileSync(
-      "tmux", ["list-panes", "-s", "-t", sessionId, "-F", "#{window_id} #{@pi_running} #{@pi_done}"],
+      "tmux", ["list-panes", "-s", "-t", sessionId, "-F", "#{window_id}|#{@pi_running}|#{@pi_done}"],
       { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }
     ).split("\n")) {
-      const [windowId, runningFlag, doneFlag] = line.trim().split(/\s+/);
+      const [windowId, runningFlag, doneFlag] = line.split("|");
       if (!windowId) continue;
       const current = perWindow.get(windowId);
       if (runningFlag === "1") perWindow.set(windowId, "running");
