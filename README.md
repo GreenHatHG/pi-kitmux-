@@ -36,7 +36,7 @@ Pi Coding Agent 的终端多路复用工具集：用 `fzf` 选择并跳转到运
 
 - tmux 原生 `#{pane_current_command}` 只返回前台进程组 leader 的程序名；执行 `enclave run pi` 时因此只能显示 `enclave`
 - helper 根据 `#{pane_pid}` 读取 pane 的 TPGID，再读取该前台 leader 的完整命令行，直接从 `enclave run [options] [--] <command>` 提取 `<command>`
-- `.tmux.conf` 的窗口状态格式只在 `pane_current_command == enclave` 时通过异步 `#(...)` 调用 helper，普通程序仍使用 tmux 原生窗口名
+- `.tmux.conf` 的窗口状态格式只在 `pane_current_command == enclave` 时通过异步 `#(...)` 调用 helper，普通程序显示实时的 tmux `pane_current_command`（前台命令名）
 - 读取失败或进程切换竞态时安全回退为 `enclave`；不会遍历或猜测沙盒中的子进程
 
 窗口栏位置标签（`tmux.conf`）：
