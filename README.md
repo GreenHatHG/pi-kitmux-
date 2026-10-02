@@ -7,7 +7,7 @@ Pi Coding Agent 的终端多路复用工具集：用 `fzf` 选择并跳转到运
 | 文件 | 说明 |
 |---|---|
 | `tmux.conf` | tmux / Byobu 配置的唯一事实源。`scripts/deploy.sh` 把它同时软链到 `~/.tmux.conf`（原生 tmux 读取）与 `~/.byobu/keybindings.tmux`（Byobu 的 `profiles/tmuxrc` 第 35 行 source），保证两边配置一致。窗口栏显示「名称@位置」（如 `pi@main` / `pi@wt:5`），一眼区分主仓与各 worktree |
-| `switch-pi-agent.py` | 主脚本。扫描进程表找到所有运行中的 Pi Agent，定位其所在的 Kitty Tab / Byobu 窗格与工作目录，用 `fzf` 交互选择后跳转（按 Kitty Tab 分组展示） |
+| `switch-pi-agent.py` | 主脚本。扫描进程表找到所有运行中的 Pi Agent，定位其所在的 Kitty Tab / Byobu 窗格与工作目录，用 `fzf` 交互选择后跳转（按 Kitty Tab 分组展示；子行的 tmux 状态栏信息与底部 tab 栏逐格对齐） |
 | `kitty-tab-sync.ts` | Pi 扩展。综合 `agent_start` / `agent_settled`、阻塞式 UI prompt 与 watchdog 生命周期，用 pane 级 `@pi_running` / `@pi_done` 作事实源，写逐窗口 `@pi_win`（tmux 窗口栏 ⏳ 运行中 / ✅ 已完成）与会话级 `@pi_total`（kitty 标题 ⏳ N）；真正跑完时发 bell |
 | `tmux-pane-command.py` | tmux 状态栏 helper。当 `pane_current_command` 只能看到沙盒 wrapper `enclave` 时，从前台 leader 的完整 `enclave run ...` 启动命令直接提取真实应用名 |
 | `pi-tab-monitor.sh` | 早期轮询方案：后台循环用 `pgrep` 检测 pi 进程并改写终端标题（已被 `kitty-tab-sync.ts` 事件驱动方案取代，保留备用） |
@@ -24,7 +24,7 @@ Pi Coding Agent 的终端多路复用工具集：用 `fzf` 选择并跳转到运
    - Kitty：`kitty @ ls` 列出所有 tab 及其 pane 的 pid；tab 标题按 `kitty.conf` 的 `tab_title_template` 动态渲染，与 tab bar 显示一致
    - Byobu/tmux：`tmux list-panes -a` 按 `pane_pid` 索引，结合祖先链把 Agent 映射到 session / window / pane
    - 工作目录：对匹配到的少量 pid 用 `lsof -d cwd` 查询
-3. **选择跳转**：`fzf` 列表展示 `PID │ Kitty Tab │ Byobu Window │ CWD`，选中后聚焦目标 Kitty Tab，并将目标所在 tmux client 精确切到对应 session/window/pane（不会误动当前 tab 自己的 client）。
+3. **选择跳转**：`fzf` 列表按 Kitty Tab 分组，组头是 tab 标题，组内每个 agent 一行；子行的 tmux 部分与状态栏逐格对齐 ——「`session:窗口号: ⏳/✅ 名称@位置 ◉/●`」，其中 `⏳/✅`、`@位置`、红 `◉`（bell）/青 `●`（activity）都由 tmux 的 `@pi_win` / `@pi_win_fmt` / `window_bell_flag` / `window_activity_flag` 直接取值，enclave 窗口缺失的应用名由 `tmux-pane-command.py` 现补，故不会与 tab 栏漂移；子行按窗口号排序，顺序也与 tab 栏一致。选中组头只聚焦该 tab，选中子行则同时切到具体 session/window/pane（只动目标 client，不会误动当前 tab 自己的 client）。
 
 安全细节：
 
@@ -78,7 +78,11 @@ tmux source-file ~/.tmux.conf
 ~/.local/bin/switch-pi-agent.py
 ```
 
-`fzf` 交互：列表按 Kitty Tab 分组，组头是该 tab 的标题，组内 agent 缩进列出。`↑/↓` 选择、`Enter` 跳转（选中组头只聚焦该 tab，选中子行则同时切到具体 session/window/pane）、`Esc` 取消。输入查询词过滤时，未命中的组头会一并隐藏。未检测到 Agent 时会提示退出。
+`fzf` 交互：列表按 Kitty Tab 分组，组头是该 tab 的标题，组内 agent 缩进列出，子行形如
+`└ 73714  win-2:2: ⏳ pi@main ◉  pi-kitmux`（`session:窗口号: 标记 名称@位置 灯 目录`，
+与底部 tab 栏一致；单窗口 session 不显示窗口号）。`↑/↓` 选择、`Enter` 跳转
+（选中组头只聚焦该 tab，选中子行则同时切到具体 session/window/pane）、`Esc` 取消。
+输入查询词过滤时，未命中的组头会一并隐藏。未检测到 Agent 时会提示退出。
 
 ### Pi 扩展安装
 
