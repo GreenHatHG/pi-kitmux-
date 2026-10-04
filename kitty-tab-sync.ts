@@ -15,8 +15,12 @@ import * as path from "node:path";
 //     for the next broadcast.
 //     ✅ means "finished but not looked at yet"; tmux-pi-ack.py clears it when you switch
 //     to that window (the after-select-* hooks in tmux.conf).
-// No BEL anymore: kitty's 🔔 is OS-window-wide, any program's bell sets it off, and it
-// duplicates ✅M.
+// BEL on completion: kitty's window_alert_on_bell (default yes) bounces the dock icon, the
+// only completion cue visible while kitty is in the background; tmux forwards a pane's BEL
+// to the outer terminal regardless of whether that window is active. The gate is `done`,
+// not `!running`: quit, session_start corrections, a UI-prompt pause and an Esc interrupt
+// are not a finish, so none of them rings. kitty's 🔔 tab badge (bell_on_tab) needs
+// {bell_symbol} in tab_title_template; that is a separate thing.
 // Known edge cases (SIGKILL / move-pane across sessions) can skew counts for a while, but
 // the next event recomputes and heals them.
 //
@@ -204,6 +208,12 @@ function updateStatus(running: boolean, done: boolean) {
     const statusTag = running ? "⏳ " : done ? "✅ " : "";
     process.stdout.write(`\x1b]2;${statusTag}${folder}\x07`);
   }
+
+  // Ring on completion: kitty's window_alert_on_bell (default yes) bounces the dock icon,
+  // the only completion cue visible while kitty is in the background. Gated on `done`
+  // rather than !running: quit, session_start corrections, a UI-prompt pause and an Esc
+  // interrupt are not a finish, so none of them rings.
+  if (done) process.stdout.write("\x07");
 }
 
 function applyEffectiveState() {

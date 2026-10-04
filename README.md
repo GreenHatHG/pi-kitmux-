@@ -8,7 +8,7 @@ Pi Coding Agent 的终端多路复用工具集：用 `fzf` 选择并跳转到运
 |---|---|
 | `tmux.conf` | tmux / Byobu 配置的唯一事实源。`scripts/deploy.sh` 把它同时软链到 `~/.tmux.conf`（原生 tmux 读取）与 `~/.byobu/keybindings.tmux`（Byobu 的 `profiles/tmuxrc` 第 35 行 source），保证两边配置一致。窗口栏显示「名称@位置」（如 `pi@main` / `pi@wt:5`），一眼区分主仓与各 worktree |
 | `switch-pi-agent.py` | 主脚本。扫描进程表找到所有运行中的 Pi Agent，定位其所在的 Kitty Tab / Byobu 窗格与工作目录，用 `fzf` 交互选择后跳转（按 Kitty Tab 分组展示；子行的 tmux 状态栏信息与底部 tab 栏逐格对齐） |
-| `kitty-tab-sync.ts` | Pi 扩展。综合 `agent_start` / `agent_settled`、阻塞式 UI prompt 与 watchdog 生命周期，用 pane 级 `@pi_running` / `@pi_done` 作事实源，写逐窗口 `@pi_win`（tmux 窗口栏 ⏳ 运行中 / ✅ 已完成待关注）与会话级 `@pi_total`（kitty 标题 ⏳N ✅M）；不发 bell |
+| `kitty-tab-sync.ts` | Pi 扩展。综合 `agent_start` / `agent_settled`、阻塞式 UI prompt 与 watchdog 生命周期，用 pane 级 `@pi_running` / `@pi_done` 作事实源，写逐窗口 `@pi_win`（tmux 窗口栏 ⏳ 运行中 / ✅ 已完成待关注）与会话级 `@pi_total`（kitty 标题 ⏳N ✅M）；跑完发 BEL 让 kitty 的 Dock 图标跳动 |
 | `tmux-pane-command.py` | tmux 状态栏 helper。当 `pane_current_command` 只能看到沙盒 wrapper `enclave` 时，从前台 leader 的完整 `enclave run ...` 启动命令直接提取真实应用名 |
 | `tmux-pane-repo.py` | tmux 状态栏 helper。用 git 求出 pane 工作目录的 `<项目名>/<位置>`：主仓为 `main`，linked worktree 为 `wt:<worktree 名>`，非 git 目录输出空串。一次调用同时供 `@pi_repo` 与 `@pi_where`，也是 picker 侧同一事实源（`#()` 在 `list-panes` 里不执行，只能另调） |
 | `tmux-pi-ack.py` | tmux 状态栏 helper（`after-select-window` / `after-select-pane` hook 调用）。切到某个 window 时把该 window 的 ✅（done-unseen）清成已读，并立即重算 `@pi_win` / `@pi_total`；负责「看一眼即已读」的即时生效 |
@@ -58,7 +58,7 @@ Pi Coding Agent 的终端多路复用工具集：用 `fzf` 选择并跳转到运
 - kitty 标题（`set-titles-string`）用 `@pi_repo`，即仓库根目录名，故同一仓库的所有 worktree 固定显示同一个 basename（如 `pi-kitmux`），不再随 worktree 变化；非 git 目录没有项目名，回退到 cwd 的 basename（与改动前的行为一致）
 - `switch-pi-agent.py` 的 picker 也从中取位置与项目名：`#()` 只在状态栏/标题这类持久格式串里执行，`tmux list-panes` 拿到的是空串（`@pi_win_fmt`、`@pi_repo`、`@pi_where` 都直接或间接来自 `#()`），故 `pane_location()` 直调同一个 helper 复算，规则不重抄
 - tab 正文抽成 `@pi_win_fmt`，`window-status-format` 与 `window-status-current-format` 用 `#{E:@pi_win_fmt}` 共用，避免两行漂移
-- 窗口栏只保留 Pi 状态标记（`@pi_win` 的 `⏳` / `✅`），**删掉**原生 `window_bell_flag` 的红 `◉` 与 `window_activity_flag` 的青 `●`：`◉` 与 `✅` 语义重复且会被任意程序的 bell 误触发，`●`（非当前窗口有输出）对常驻输出的 agent 几乎常亮、不携带信息
+- 窗口栏只保留 Pi 状态标记（`@pi_win` 的 `⏳` / `✅`），**删掉**原生 `window_bell_flag` 的红 `◉` 与 `window_activity_flag` 的青 `●`：`◉` 与 `✅` 语义重复且会被任意程序的 bell 误触发，`●`（非当前窗口有输出）对常驻输出的 agent 几乎常亮、不携带信息。这里删的只是 tmux 里那个红色 `◉` 装饰；扩展照旧发 BEL，用于触发 kitty 的 Dock 跳动
 - 「已完成」的清除靠 `after-select-window` / `after-select-pane` hook（见 `tmux-pi-ack.py`），`✅` 因此是「待关注」而非永久粘滞标记
 
 `kitty-tab-sync.ts`：
@@ -69,7 +69,7 @@ Pi Coding Agent 的终端多路复用工具集：用 `fzf` 选择并跳转到运
 - 会话级 `@pi_total`：本 session 计数 `⏳N ✅M`（N=运行中、M=已完成待关注；为 0 的部分省略，全 0 则整段不显示），供 kitty tab 标题（`set-titles-string`）；放 session 级，新开的 tmux 窗口也能立即显示
 - 与 `pi-extension-watchdog` 通过 `pi.events` 同步生命周期：watchdog 的 `running` 只表示它自己处于监控/armed 状态（空会话自启动时也会为真），因此仅在**本进程已跑过至少一轮**后，才用它作为「单轮 `agent_settled` 后仍会续跑」的抑制项继续保持 ⏳；否则空会话会误亮。用户按 `Esc` 中止一轮时 watchdog 会广播 `interrupted: true`（此时 `running` 仍为真）：表示本次空闲不会再续跑，故立即清掉 ⏳，且不置 ✅——这一轮并非「真正跑完」；等用户发下一条真实消息、watchdog 清回 `interrupted: false` 后恢复正常。只有 watchdog 停止/挂起且当前 agent 已结束时才置 ✅
 - 阻塞式 UI prompt（如 plan 评审）期间临时视为等待用户，不显示运行中；prompt 结束后按 agent/watchdog 真值恢复
-- 不再发送 bell（`\a`）：kitty 的 `🔔`（`bell_on_tab`）是 OS window 级、任何程序的 bell 都会误触发，且与 `✅M` 语义重复；完成提醒统一由 tmux 窗口栏的 `✅`、kitty 标题的 `✅M` 与 picker 承担
+- 跑完发 BEL（`\a`）：kitty 的 `window_alert_on_bell`（默认 `yes`）收到 BEL 会让 Dock 图标跳动，这是 kitty 切到后台时唯一看得见的完成提醒（tmux 窗口栏 `✅`、kitty 标题 `✅M` 在后台都看不到）。tmux 默认会把 pane 的 BEL 转发给外层终端，与该 window 是否为当前窗口无关；BEL 只在真正跑完时发（Esc 打断、退出、`session_start` 校正、弹窗暂停都不发）。kitty 的 `🔔` tab 徽标（`bell_on_tab`）走 `tab_title_template` 的 `{bell_symbol}`，是另一回事
 - 所有对 tmux 的写调用收在 `StatusSink` 后面，便于将来接远端 sink
 
 ## 使用
