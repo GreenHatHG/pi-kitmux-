@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Mark a tmux window as seen: clear its ✅ and rebuild the status at once.
 
-tmux runs this on ``after-select-window`` / ``after-select-pane`` when you switch
-to a window or pane, and hands it that window id. It clears ``@pi_done`` on the
-window's panes, then recomputes ``@pi_win`` (window bar) and ``@pi_total`` (kitty
-title / session count). Without this, a ✅ waits for the next Pi event — and an
-idle agent may never send one.
+tmux 的 ``after-select-window`` / ``after-select-pane`` hook 在你切到某个 window /
+pane 时以该 window id 调用本脚本；``MouseDown1Status`` 绑定则在点状态栏的 window
+tab 时调用它（点当前 window 不会触发前两个 hook，单窗口下这条路才清得掉 ✅）。
+脚本把该 window 内各 pane 的 ``@pi_done`` 清掉，
+并立刻重算 ``@pi_win``（窗口栏）与 ``@pi_total``（kitty 标题 / 会话计数），
+这样 ✅ 不必等 Pi 扩展的下一个事件才消失——空转的 agent 可能永远等不到下一个事件。
 
 Why recompute: ``@pi_win`` / ``@pi_total`` are views the extension builds from
 pane-level ``@pi_running`` / ``@pi_done``. Once you clear the source you must

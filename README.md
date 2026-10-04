@@ -11,7 +11,7 @@ Pi Coding Agent 的终端多路复用工具集：用 `fzf` 选择并跳转到运
 | `kitty-tab-sync.ts` | Pi 扩展。综合 `agent_start` / `agent_settled`、阻塞式 UI prompt 与 watchdog 生命周期，用 pane 级 `@pi_running` / `@pi_done` 作事实源，写逐窗口 `@pi_win`（tmux 窗口栏 ⏳ 运行中 / ✅ 已完成待关注）与会话级 `@pi_total`（kitty 标题 ⏳N ✅M）；跑完发 BEL 让 kitty 的 Dock 图标跳动 |
 | `tmux-pane-command.py` | tmux 状态栏 helper。当 `pane_current_command` 只能看到沙盒 wrapper `enclave` 时，从前台 leader 的完整 `enclave run ...` 启动命令直接提取真实应用名 |
 | `tmux-pane-repo.py` | tmux 状态栏 helper。用 git 求出 pane 工作目录的 `<项目名>/<位置>`：主仓为 `main`，linked worktree 为 `wt:<worktree 名>`，非 git 目录输出空串。一次调用同时供 `@pi_repo` 与 `@pi_where`，也是 picker 侧同一事实源（`#()` 在 `list-panes` 里不执行，只能另调） |
-| `tmux-pi-ack.py` | tmux 状态栏 helper（`after-select-window` / `after-select-pane` hook 调用）。切到某个 window 时把该 window 的 ✅（done-unseen）清成已读，并立即重算 `@pi_win` / `@pi_total`；负责「看一眼即已读」的即时生效 |
+| `tmux-pi-ack.py` | tmux 状态栏 helper（`after-select-window` / `after-select-pane` hook，以及 `MouseDown1Status` 绑定调用）。切到或点中某个 window 时把该 window 的 ✅（done-unseen）清成已读，并立即重算 `@pi_win` / `@pi_total`；负责「看一眼即已读」的即时生效 |
 | `pi-tab-monitor.sh` | 早期轮询方案：后台循环用 `pgrep` 检测 pi 进程并改写终端标题（已被 `kitty-tab-sync.ts` 事件驱动方案取代，保留备用） |
 | `scripts/check.sh` | 一键验证：pre-commit 静态检查（ruff / codespell / vulture / mypy / pyright / pylint）+ 单元测试 |
 | `scripts/deploy.sh` | 部署：把 `tmux.conf` 软链到 `~/.tmux.conf` 与 `~/.byobu/keybindings.tmux`，把四个 tmux helper 软链到 `~/.local/bin/`，把 Pi 扩展软链到 `~/.pi/agent/extensions/`。首次运行会把已存在的真实文件备份为 `*.bak.<时间戳>` |
@@ -43,8 +43,9 @@ Pi Coding Agent 的终端多路复用工具集：用 `fzf` 选择并跳转到运
 
 `tmux-pi-ack.py`（ack helper）：
 
-- 语义：**看一眼即已读**。`✅` 表示「跑完但还没看过」；切到该 window（`after-select-window`）或该 pane（`after-select-pane`）即算看过，`✅` 消失
-- 做法：hook 以 `#{window_id}` 调本脚本，脚本清掉该 window 内各 pane 的 `@pi_done`，再立刻重算 `@pi_win` / `@pi_total` 并 `refresh-client -S`
+- 语义：**看一眼即已读**。`✅` 表示「跑完但还没看过」；切到该 window（`after-select-window`）、切到该 pane（`after-select-pane`），或点状态栏上该 window 的 tab（`MouseDown1Status` 绑定）即算看过，`✅` 消失
+- 做法：hook / 绑定以 `#{window_id}` 调本脚本，脚本清掉该 window 内各 pane 的 `@pi_done`，再立刻重算 `@pi_win` / `@pi_total` 并 `refresh-client -S`
+- 为何单窗口也点得动：点当前 window 时窗口没变化，`after-select-window` 与 `session-window-changed` 都不发；`MouseDown1Status` 对「点当前 window」仍会触发，正好补上这条路
 - 为何要重算：`@pi_win` / `@pi_total` 是扩展从 pane 级事实源算出的投影；若只清 `@pi_done` 而不重算，状态栏上的 `✅` 会残留到扩展的下一个事件——而空转的 agent 可能永远等不到下一个事件
 - helper 未部署时 hook 静默跳过；重算规则与 `kitty-tab-sync.ts` 的 `broadcastStatus()` 保持一致（改一处要同步另一处）
 
@@ -59,13 +60,13 @@ Pi Coding Agent 的终端多路复用工具集：用 `fzf` 选择并跳转到运
 - `switch-pi-agent.py` 的 picker 也从中取位置与项目名：`#()` 只在状态栏/标题这类持久格式串里执行，`tmux list-panes` 拿到的是空串（`@pi_win_fmt`、`@pi_repo`、`@pi_where` 都直接或间接来自 `#()`），故 `pane_location()` 直调同一个 helper 复算，规则不重抄
 - tab 正文抽成 `@pi_win_fmt`，`window-status-format` 与 `window-status-current-format` 用 `#{E:@pi_win_fmt}` 共用，避免两行漂移
 - 窗口栏只保留 Pi 状态标记（`@pi_win` 的 `⏳` / `✅`），**删掉**原生 `window_bell_flag` 的红 `◉` 与 `window_activity_flag` 的青 `●`：`◉` 与 `✅` 语义重复且会被任意程序的 bell 误触发，`●`（非当前窗口有输出）对常驻输出的 agent 几乎常亮、不携带信息。这里删的只是 tmux 里那个红色 `◉` 装饰；扩展照旧发 BEL，用于触发 kitty 的 Dock 跳动
-- 「已完成」的清除靠 `after-select-window` / `after-select-pane` hook（见 `tmux-pi-ack.py`），`✅` 因此是「待关注」而非永久粘滞标记
+- 「已完成」的清除靠 `after-select-window` / `after-select-pane` hook 与 `MouseDown1Status` 绑定（见 `tmux-pi-ack.py`）；后者覆盖「点当前 window 的 tab」这种不触发前两者的情形，`✅` 因此是「待关注」而非永久粘滞标记
 
 `kitty-tab-sync.ts`：
 
 - pane 级 `@pi_running` / `@pi_done` 是事实源（pane 销毁自动清除，不残留）：前者表示本 pane 仍在处理，后者表示上一轮已真正跑完且未被新一轮覆盖
 - pane 级 `@pi_running` / `@pi_done` 是事实源（pane 销毁自动清除，不残留）：前者表示本 pane 仍在处理，后者表示上一轮已真正跑完且**尚未被看过**
-- 窗口级 `@pi_win`：tmux/byobu 窗口栏每格显示三态——有 pane 在跑为 `⏳`（优先于 ✅）、有 pane 跑完待关注为 `✅`、否则为空（均不带数字）；`✅` 会在该 pane 下一轮运行、出现阻塞式 prompt、切换 session（`/new` / `/resume` / `/fork`）、进程退出，或**切到该 window（ack，见 `tmux-pi-ack.py`）**时清除
+- 窗口级 `@pi_win`：tmux/byobu 窗口栏每格显示三态——有 pane 在跑为 `⏳`（优先于 ✅）、有 pane 跑完待关注为 `✅`、否则为空（均不带数字）；`✅` 会在该 pane 下一轮运行、出现阻塞式 prompt、切换 session（`/new` / `/resume` / `/fork`）、进程退出，或**切到 / 点中该 window（ack，见 `tmux-pi-ack.py`）**时清除
 - 会话级 `@pi_total`：本 session 计数 `⏳N ✅M`（N=运行中、M=已完成待关注；为 0 的部分省略，全 0 则整段不显示），供 kitty tab 标题（`set-titles-string`）；放 session 级，新开的 tmux 窗口也能立即显示
 - 与 `pi-extension-watchdog` 通过 `pi.events` 同步生命周期：watchdog 的 `running` 只表示它自己处于监控/armed 状态（空会话自启动时也会为真），因此仅在**本进程已跑过至少一轮**后，才用它作为「单轮 `agent_settled` 后仍会续跑」的抑制项继续保持 ⏳；否则空会话会误亮。用户按 `Esc` 中止一轮时 watchdog 会广播 `interrupted: true`（此时 `running` 仍为真）：表示本次空闲不会再续跑，故立即清掉 ⏳，且不置 ✅——这一轮并非「真正跑完」；等用户发下一条真实消息、watchdog 清回 `interrupted: false` 后恢复正常。只有 watchdog 停止/挂起且当前 agent 已结束时才置 ✅
 - 阻塞式 UI prompt（如 plan 评审）期间临时视为等待用户，不显示运行中；prompt 结束后按 agent/watchdog 真值恢复
