@@ -7,6 +7,9 @@ import * as path from "node:path";
 //     including a watchdog rerun); tmux clears it when the pane dies.
 //   - pane-level @pi_done: this pane's last run really finished and was not covered by a
 //     new run; tmux clears it when the pane dies.
+//   - pane-level @pi_done_at: epoch seconds when @pi_done was set, rendered by the picker
+//     next to ✅ so you can see when the run finished; written and cleared together with
+//     @pi_done.
 //   - window-level @pi_win: "⏳ " (a pane is running, wins) / "✅ " (all done) / "", shown
 //     per window in the tmux/byobu window bar.
 //   - session-level @pi_total: "⏳N ✅M " (running / done-and-unseen task counts for this
@@ -55,9 +58,19 @@ class TmuxStatusSink implements StatusSink {
     this.cmd(["set", "-pq", "-t", this.pane, "@pi_running", on ? "1" : ""]);
   }
 
-  // Like @pi_running: pane-level, auto-cleared when the pane dies; 1 when done, cleared on the next run/exit
+  // Like @pi_running: pane-level, auto-cleared when the pane dies; 1 when done, cleared on the next run/exit.
+  // @pi_done_at rides along: the completion wall-clock (epoch seconds) the picker prints next to ✅.
+  // Both move together, so a missing timestamp always means "not done", never a stale time.
   setPaneDone(on: boolean): void {
     this.cmd(["set", "-pq", "-t", this.pane, "@pi_done", on ? "1" : ""]);
+    this.cmd([
+      "set",
+      "-pq",
+      "-t",
+      this.pane,
+      "@pi_done_at",
+      on ? String(Math.floor(Date.now() / 1000)) : "",
+    ]);
   }
 
   // One shown state per window: running first, then done, else empty

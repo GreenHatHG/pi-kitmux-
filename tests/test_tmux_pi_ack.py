@@ -83,7 +83,13 @@ class AckTest(TestCase):
         )
         calls = self._run("@1", "$0", list_output)
         unset = [c for c in calls if c[:2] == ["set", "-pu"]]
-        self.assertEqual(unset, [["set", "-pu", "-t", "%1", "@pi_done"]])
+        self.assertEqual(
+            unset,
+            [
+                ["set", "-pu", "-t", "%1", "@pi_done"],
+                ["set", "-pu", "-t", "%1", "@pi_done_at"],
+            ],
+        )
 
     def test_rewrites_window_status_and_session_total(self) -> None:
         list_output = f"@1{SEP}%1{SEP}{SEP}1\n@2{SEP}%3{SEP}{SEP}1\n"

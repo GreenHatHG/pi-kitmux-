@@ -5,6 +5,7 @@ path with importlib. Only covers pure logic that needs no kitty / tmux / fzf.
 """
 
 import importlib.util
+from datetime import datetime
 from pathlib import Path
 from unittest import TestCase, mock
 
@@ -77,6 +78,7 @@ def _agent(**overrides: object) -> dict:
         "pane_cmd": "pi",
         "pi_running": True,
         "pi_done": False,
+        "done_at": "",
         "fmt": "pi",
         "where": "main",
         "repo": "repo",
@@ -109,6 +111,26 @@ class PaneMarkerTest(TestCase):
         self.assertEqual(
             switch_pi_agent.pane_marker(_agent(pi_running=False, pi_done=False)), ""
         )
+
+
+class FormatDoneAtTest(TestCase):
+    def test_same_day_is_clock_time(self) -> None:
+        now = datetime(2024, 3, 8, 18, 0, 0)
+        ts = int(datetime(2024, 3, 8, 14, 32, 5).timestamp())
+        self.assertEqual(switch_pi_agent.format_done_at(str(ts), now=now), "14:32:05")
+
+    def test_other_day_adds_date(self) -> None:
+        now = datetime(2024, 3, 9, 1, 0, 0)
+        ts = int(datetime(2024, 3, 8, 14, 32, 5).timestamp())
+        self.assertEqual(
+            switch_pi_agent.format_done_at(str(ts), now=now), "03-08 14:32"
+        )
+
+    def test_missing_or_bad_value_is_empty(self) -> None:
+        self.assertEqual(switch_pi_agent.format_done_at(""), "")
+        self.assertEqual(switch_pi_agent.format_done_at("abc"), "")
+        self.assertEqual(switch_pi_agent.format_done_at("0"), "")
+        self.assertEqual(switch_pi_agent.format_done_at("-5"), "")
 
 
 class BuildRowsTest(TestCase):
@@ -179,6 +201,7 @@ class ParsePanesTest(TestCase):
         # Field order matches collect_agents' -F query:
         # session / win_id / win_idx / win_name / pane_cmd / @pi_running / @pi_done
         # / session_windows / @pi_win_fmt / pane_current_path / pane_id / pane_pid
+        # / @pi_done_at
         fields = [
             "win-5",
             "@32",
@@ -192,6 +215,7 @@ class ParsePanesTest(TestCase):
             "/repo/.worktrees/2",
             "%32",
             "28556",
+            "",
         ]
         for index, value in overrides:
             fields[index] = value
@@ -209,6 +233,10 @@ class ParsePanesTest(TestCase):
         self.assertEqual(pane["sess_win_count"], 4)
         self.assertEqual(pane["fmt"], "pi")
         self.assertEqual(pane["pane_path"], "/repo/.worktrees/2")
+
+    def test_parses_done_time(self) -> None:
+        panes = switch_pi_agent.parse_panes(self._record((6, "1"), (12, "1700000000")))
+        self.assertEqual(panes[28556]["done_at"], "1700000000")
 
     def test_parses_done_flag(self) -> None:
         panes = switch_pi_agent.parse_panes(self._record((5, ""), (6, "1")))
@@ -373,6 +401,20 @@ class FormatChildTest(TestCase):
         text, ansi = switch_pi_agent.format_child(agent, show_session=False)
         self.assertIn("✅ pi@main", text)
         self.assertIn("\x1b[33m✅ \x1b[0mpi@main", ansi)
+
+    def test_done_pane_shows_completion_time(self) -> None:
+        now = datetime.now()
+        ts = int(now.replace(hour=14, minute=32, second=5, microsecond=0).timestamp())
+        agent = _agent(pi_running=False, pi_done=True, done_at=str(ts))
+        text, ansi = switch_pi_agent.format_child(agent, show_session=False)
+        self.assertIn("✅ pi@main (14:32:05)", text)
+        self.assertIn("\x1b[2m (14:32:05)\x1b[0m", ansi)
+
+    def test_running_pane_hides_completion_time(self) -> None:
+        agent = _agent(pi_running=True, pi_done=True, done_at="1700000000")
+        text, _ = switch_pi_agent.format_child(agent, show_session=False)
+        self.assertNotIn("(", text)
+        self.assertIn("⏳ pi@main", text)
 
     def test_empty_marker_adds_no_color_codes(self) -> None:
         agent = _agent(pi_running=False, pi_done=False)

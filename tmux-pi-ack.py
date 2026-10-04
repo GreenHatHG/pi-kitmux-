@@ -4,7 +4,7 @@
 tmux 的 ``after-select-window`` / ``after-select-pane`` hook 在你切到某个 window /
 pane 时以该 window id 调用本脚本；``MouseDown1Status`` 绑定则在点状态栏的 window
 tab 时调用它（点当前 window 不会触发前两个 hook，单窗口下这条路才清得掉 ✅）。
-脚本把该 window 内各 pane 的 ``@pi_done`` 清掉，
+脚本把该 window 内各 pane 的 ``@pi_done`` 与配套的 ``@pi_done_at`` 清掉，
 并立刻重算 ``@pi_win``（窗口栏）与 ``@pi_total``（kitty 标题 / 会话计数），
 这样 ✅ 不必等 Pi 扩展的下一个事件才消失——空转的 agent 可能永远等不到下一个事件。
 
@@ -89,9 +89,11 @@ def ack(window_id: str) -> None:
         return
     panes = read_panes(session_id)
     # A done pane in this window counts as seen: clear it in tmux and in our local copy.
+    # @pi_done_at goes with @pi_done (the picker's "finished at" time), so unset both.
     for pane in panes:
         if pane.window_id == window_id and pane.done:
             tmux(["set", "-pu", "-t", pane.pane_id, "@pi_done"])
+            tmux(["set", "-pu", "-t", pane.pane_id, "@pi_done_at"])
     updated = [
         Pane(pane.window_id, pane.pane_id, pane.running, False)
         if pane.window_id == window_id

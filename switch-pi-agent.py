@@ -3,7 +3,13 @@ import json
 import os
 import re
 import subprocess
+import time
 import glob
+from datetime import datetime
+
+# Start of this process, used for the popup's "loaded in" readout: everything from here
+# to the fzf launch (ps/lsof/tmux/kitty queries) is what opening the popup costs.
+_T0 = time.monotonic()
 
 
 def run(cmd, timeout=3):
@@ -139,7 +145,7 @@ def get_kitty_tabs():
 # time, and a name with ":::" would silently drop the whole line, hiding an agent
 # from the picker.
 _PANE_SEP = "\x1f"
-_PANE_FIELDS = 12
+_PANE_FIELDS = 13
 # Control chars that would break the fzf line and shift --accept-nth row numbers.
 _PANE_CTRL = re.compile(r"[\x00-\x1f\x7f]")
 
@@ -151,7 +157,7 @@ def parse_panes(output):
     newline-separated, but a window name is user-editable and may hold a newline,
     and `splitlines()` would split one row into two and shift the fields.
     So the query format also ends with a separator; here we split on the separator
-    to get all fields, then regroup them 12 at a time: a newline inside a window
+    to get all fields, then regroup them 13 at a time: a newline inside a window
     name stays inside its field (and is scrubbed by _PANE_CTRL), so grouping
     stays aligned.
     """
@@ -171,6 +177,7 @@ def parse_panes(output):
             pane_path,
             pane_id,
             ppid,
+            done_at,
         ) = fields[i : i + _PANE_FIELDS]
         try:
             panes[int(ppid)] = {
@@ -186,6 +193,10 @@ def parse_panes(output):
                 "pane_path": pane_path,
                 "pane_pid": int(ppid),
                 "pane_id": pane_id,
+                # Raw "@pi_done_at" (epoch seconds): keep the string and let
+                # format_done_at() decide whether it is usable, matching the lazy
+                # "pi_running == '1'" style above.
+                "done_at": done_at,
             }
         except ValueError:
             continue
@@ -271,7 +282,8 @@ def collect_agents():
 
     # tmux pane info, indexed by pane_pid. State comes from pane-level @pi_running
     # / @pi_done (not the window-level @pi_win view), so two panes in one window
-    # can show their own state.
+    # can show their own state. @pi_done_at is the completion time the picker prints
+    # next to ✅.
     # Also grab @pi_win_fmt (name) and pane_current_path (for the git-based place/name).
     # Note `#()` does not run inside list-panes: the name part of @pi_win_fmt, @pi_repo,
     # and @pi_where are all empty there (all come from `#()`), so win_label() /
@@ -297,6 +309,7 @@ def collect_agents():
                     "#{pane_current_path}",
                     "#{pane_id}",
                     "#{pane_pid}",
+                    "#{@pi_done_at}",
                 )
             )
             # The trailing separator puts the record-boundary newline at the start
@@ -344,6 +357,7 @@ def collect_agents():
                 "pane_cmd": t_info["pane_cmd"] if t_info else "",
                 "pi_running": t_info["pi_running"] if t_info else False,
                 "pi_done": t_info["pi_done"] if t_info else False,
+                "done_at": t_info["done_at"] if t_info else "",
                 "fmt": t_info["fmt"] if t_info else "",
                 "where": where,
                 "repo": repo,
@@ -365,6 +379,7 @@ _TMUX_HELPER = os.path.expanduser("~/.local/bin/tmux-pane-command.py")
 _REPO_HELPER = os.path.expanduser("~/.local/bin/tmux-pane-repo.py")
 _ANSI_RESET = "\x1b[0m"
 _ANSI_YELLOW = "\x1b[33m"
+_ANSI_DIM = "\x1b[2m"
 
 
 def pane_location(pane_path):
@@ -430,6 +445,30 @@ def pane_marker(agent):
     return ""
 
 
+def format_done_at(value, now=None):
+    """Render @pi_done_at (epoch seconds) as the local completion time.
+
+    Same local day -> "HH:MM:SS", another day -> "MM-DD HH:MM"; anything missing or
+    unparsable -> "". The picker shows this next to ✅ so an unseen entry tells you
+    when its run finished.
+    """
+    try:
+        ts = int(value)
+    except (TypeError, ValueError):
+        return ""
+    if ts <= 0:
+        return ""
+    done = datetime.fromtimestamp(ts)
+    reference = now or datetime.now()
+    if (done.year, done.month, done.day) == (
+        reference.year,
+        reference.month,
+        reference.day,
+    ):
+        return done.strftime("%H:%M:%S")
+    return done.strftime("%m-%d %H:%M")
+
+
 def format_child(agent, show_session=True):
     """Picker child row: locate context, marker, and name@place.
 
@@ -452,11 +491,21 @@ def format_child(agent, show_session=True):
         bool(agent.get("tab_id")),
     )
     cwd_column = f"  {cwd}" if cwd else ""
-    text = f"{prefix}{marker}{label}{cwd_column}"
+    # Only a done-and-not-running pane has a completion time; ⏳ hides a done flag,
+    # so the time stays off running rows. No timestamp (old state) just shows ✅.
+    done_at = (
+        format_done_at(agent.get("done_at", ""))
+        if agent.get("pi_done") and not agent.get("pi_running")
+        else ""
+    )
+    done_column = f" ({done_at})" if done_at else ""
+    text = f"{prefix}{marker}{label}{cwd_column}{done_column}"
     ansi = prefix
     if marker:
         ansi += f"{_ANSI_YELLOW}{marker}{_ANSI_RESET}"
     ansi += label + cwd_column
+    if done_column:
+        ansi += f"{_ANSI_DIM}{done_column}{_ANSI_RESET}"
     return text, ansi
 
 
@@ -574,9 +623,13 @@ def main():
     rows = build_rows(agents)
     running = sum(1 for a in agents if a["pi_running"])
     done = sum(1 for a in agents if a["pi_done"])
+    # Everything up to here is what opening the popup costs (process start -> fzf): ps / lsof /
+    # tmux / kitty queries. Show it in the header so a slow open is visible, not just felt.
+    elapsed = time.monotonic() - _T0
     header = (
         "Pick a Pi Agent (↑/↓ select, Enter jump, Esc cancel) —— "
         f"⏳{running} running · ✅{done} unseen · grouped by Kitty tab"
+        f" · loaded in {elapsed:.2f}s"
     )
     # On Enter, --accept-nth='{n}' returns the row's index in the input (with --no-sort
     # that is the rows index). So even two tabs with the same title still land on the
