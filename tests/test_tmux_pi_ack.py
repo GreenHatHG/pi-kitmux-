@@ -39,7 +39,9 @@ class SessionTotalTest(TestCase):
         self.assertEqual(pi_ack.session_total(panes), "⏳2 ✅1 ")
 
     def test_running_only(self) -> None:
-        self.assertEqual(pi_ack.session_total([_pane("@1", "%1", running=True)]), "⏳1 ")
+        self.assertEqual(
+            pi_ack.session_total([_pane("@1", "%1", running=True)]), "⏳1 "
+        )
 
     def test_done_only(self) -> None:
         self.assertEqual(pi_ack.session_total([_pane("@1", "%1", done=True)]), "✅1 ")
@@ -50,12 +52,7 @@ class SessionTotalTest(TestCase):
 
 class ReadPanesTest(TestCase):
     def test_parses_flags_and_skips_blank(self) -> None:
-        output = (
-            f"@1{SEP}%1{SEP}1{SEP}\n"
-            f"@1{SEP}%2{SEP}{SEP}1\n"
-            f"\n"
-            f"broken{SEP}line\n"
-        )
+        output = f"@1{SEP}%1{SEP}1{SEP}\n@1{SEP}%2{SEP}{SEP}1\n\nbroken{SEP}line\n"
         with mock.patch.object(pi_ack, "tmux", return_value=output):
             panes = pi_ack.read_panes("$0")
         self.assertEqual(
@@ -82,18 +79,16 @@ class AckTest(TestCase):
 
     def test_clears_done_only_in_target_window(self) -> None:
         list_output = (
-            f"@1{SEP}%1{SEP}{SEP}1\n"
-            f"@1{SEP}%2{SEP}1{SEP}\n"
-            f"@2{SEP}%3{SEP}{SEP}1\n"
+            f"@1{SEP}%1{SEP}{SEP}1\n@1{SEP}%2{SEP}1{SEP}\n@2{SEP}%3{SEP}{SEP}1\n"
         )
         calls = self._run("@1", "$0", list_output)
         unset = [c for c in calls if c[:2] == ["set", "-pu"]]
         self.assertEqual(unset, [["set", "-pu", "-t", "%1", "@pi_done"]])
 
     def test_rewrites_window_status_and_session_total(self) -> None:
-        list_output = f"@1{SEP}%1{SEP}{SEP}1\n" f"@2{SEP}%3{SEP}{SEP}1\n"
+        list_output = f"@1{SEP}%1{SEP}{SEP}1\n@2{SEP}%3{SEP}{SEP}1\n"
         calls = self._run("@1", "$0", list_output)
-        # ack 掉 @1 后：@1 空、@2 仍 ✅
+        # After acking @1: @1 is empty, @2 is still ✅
         self.assertIn(["set", "-wq", "-t", "@1", "@pi_win", ""], calls)
         self.assertIn(["set", "-wq", "-t", "@2", "@pi_win", "✅ "], calls)
         self.assertIn(["set", "-q", "-t", "$0", "@pi_total", "✅1 "], calls)

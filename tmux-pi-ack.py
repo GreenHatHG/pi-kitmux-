@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
-"""看一眼即视为已读：清掉某个 tmux window 的 ✅（done-unseen）并重算状态投影。
+"""Mark a tmux window as seen: clear its ✅ and rebuild the status at once.
 
-tmux 的 ``after-select-window`` / ``after-select-pane`` hook 在你切到某个 window /
-pane 时以该 window id 调用本脚本。它把该 window 内各 pane 的 ``@pi_done`` 清掉，
-并立刻重算 ``@pi_win``（窗口栏）与 ``@pi_total``（kitty 标题 / 会话计数），
-这样 ✅ 不必等 Pi 扩展的下一个事件才消失——空转的 agent 可能永远等不到下一个事件。
+tmux runs this on ``after-select-window`` / ``after-select-pane`` when you switch
+to a window or pane, and hands it that window id. It clears ``@pi_done`` on the
+window's panes, then recomputes ``@pi_win`` (window bar) and ``@pi_total`` (kitty
+title / session count). Without this, a ✅ waits for the next Pi event — and an
+idle agent may never send one.
 
-之所以要重算：``@pi_win`` / ``@pi_total`` 是扩展从 pane 级 ``@pi_running`` /
-``@pi_done`` 算出的投影。清掉事实源后若不重算，状态栏上的 ✅ 会一直残留。
+Why recompute: ``@pi_win`` / ``@pi_total`` are views the extension builds from
+pane-level ``@pi_running`` / ``@pi_done``. Once you clear the source you must
+recompute, or the ✅ stays on screen.
 
-重算规则与 ``kitty-tab-sync.ts`` 的 ``broadcastStatus()`` 保持一致，改一处要同步另一处：
-  @pi_win  逐 window：任一 @pi_running=1 → "⏳ "；否则任一 @pi_done=1 → "✅ "；否则 ""
-  @pi_total 逐 session："⏳N ✅M "（为 0 的部分省略；全 0 时为 ""）
+Keep the rules the same as ``broadcastStatus()`` in ``kitty-tab-sync.ts``: if you
+change one, change the other:
+  @pi_win   per window: any @pi_running=1 -> "⏳ "; else any @pi_done=1 -> "✅ "; else ""
+  @pi_total per session: "⏳N ✅M " (skip a zero part; "" when both are zero)
 """
 
 import subprocess
@@ -34,7 +37,7 @@ class Pane:
 
 
 def tmux(args: Sequence[str]) -> str:
-    """执行 tmux 子命令；超时 / 出错 / 非 tmux 环境一律回退为空串，绝不阻塞。"""
+    """Run a tmux subcommand; on timeout, error, or no tmux, return "" and never block."""
     try:
         return subprocess.check_output(
             ["tmux", *args], text=True, stderr=subprocess.DEVNULL, timeout=TIMEOUT
@@ -84,7 +87,7 @@ def ack(window_id: str) -> None:
     if not session_id:
         return
     panes = read_panes(session_id)
-    # 目标 window 内已完成的 pane 视为已读：写回 tmux（持久），并在本地置否用于本次重算
+    # A done pane in this window counts as seen: clear it in tmux and in our local copy.
     for pane in panes:
         if pane.window_id == window_id and pane.done:
             tmux(["set", "-pu", "-t", pane.pane_id, "@pi_done"])

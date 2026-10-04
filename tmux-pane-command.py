@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resolve the application wrapped by ``enclave run`` for a tmux pane."""
+"""Find the real app behind ``enclave run`` for a tmux pane."""
 
 import os
 import re
@@ -17,14 +17,14 @@ PsRunner = Callable[[list[str]], str]
 
 
 def _safe_basename(value: str) -> str | None:
-    """Return a status-line-safe executable basename."""
+    """Return an executable name that is safe for the status line."""
     name = os.path.basename(value.strip())
     name = _CONTROL_CHARS.sub("", name)
     return name or None
 
 
 def parse_enclave_command(command_line: str) -> str | None:
-    """Extract ``<command>`` from an ``enclave run [options] -- <command>`` line."""
+    """Pull ``<command>`` out of ``enclave run [options] -- <command>``."""
     try:
         tokens = shlex.split(command_line)
     except ValueError:
@@ -59,7 +59,7 @@ def parse_enclave_command(command_line: str) -> str | None:
 
 
 def run_ps(args: list[str]) -> str:
-    """Run macOS ps with a short timeout; return an empty string on races/errors."""
+    """Run macOS ps with a short timeout; return "" on error or race."""
     try:
         return subprocess.check_output(
             ["/bin/ps", *args],
@@ -74,7 +74,7 @@ def run_ps(args: list[str]) -> str:
 def resolve_pane_command(
     pane_pid: int, fallback: str = "enclave", ps_runner: PsRunner = run_ps
 ) -> str:
-    """Read the pane foreground leader's launch command and unwrap enclave."""
+    """Read the pane leader's command and unwrap enclave."""
     safe_fallback = _safe_basename(fallback) or "enclave"
     raw_tpgid = ps_runner(["-p", str(pane_pid), "-o", "tpgid="]).strip()
     try:

@@ -1,7 +1,7 @@
-"""switch-pi-agent 纯函数的回归测试。
+"""Regression tests for the pure functions in switch-pi-agent.
 
-主脚本文件名含连字符无法直接 import，通过 importlib 按路径加载。
-只覆盖不依赖 kitty / tmux / fzf 运行环境的纯逻辑。
+The main script name has a hyphen so it cannot be imported directly; load it by
+path with importlib. Only covers pure logic that needs no kitty / tmux / fzf.
 """
 
 import importlib.util
@@ -10,7 +10,9 @@ from unittest import TestCase, mock
 
 _SCRIPT = Path(__file__).resolve().parent.parent / "switch-pi-agent.py"
 _spec = importlib.util.spec_from_file_location("switch_pi_agent", _SCRIPT)
-assert _spec is not None and _spec.loader is not None  # 路径固定存在，仅为类型收窄
+assert (
+    _spec is not None and _spec.loader is not None
+)  # path always exists; just narrows types
 switch_pi_agent = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(switch_pi_agent)
 
@@ -58,7 +60,7 @@ class AncestorChainTest(TestCase):
     def test_walks_up_to_init(self) -> None:
         self.assertEqual(
             switch_pi_agent.ancestor_chain(3, {3: 2, 2: 1}), [3, 2]
-        )  # 终点祖先 launchd(1) 不入链
+        )  # the end ancestor launchd(1) is not in the chain
 
     def test_self_parent_does_not_hang(self) -> None:
         self.assertEqual(switch_pi_agent.ancestor_chain(5, {5: 5}), [5])
@@ -75,7 +77,8 @@ def _agent(**overrides: object) -> dict:
         "pane_cmd": "pi",
         "pi_running": True,
         "pi_done": False,
-        "fmt": "pi@main",
+        "fmt": "pi",
+        "where": "main",
         "repo": "repo",
         "pane_tmux_pid": 555,
         "tab_title": "1: repo",
@@ -134,7 +137,8 @@ class BuildRowsTest(TestCase):
         self.assertEqual(rows[0]["text"], "[win 2] 3: repo · main")
 
     def test_duplicate_tab_titles_stay_distinct(self) -> None:
-        # 两个 tab 渲染出完全相同的标题时，仍是两条独立行（由行号回传消歧义）
+        # Two tabs with identical titles still become two separate rows
+        # (disambiguated by the returned row number)
         a1 = _agent(pid=11, tab_id="10", tab_title="1: repo", tab_index=1)
         a2 = _agent(pid=22, tab_id="20", tab_title="1: repo", tab_index=2)
         rows = switch_pi_agent.build_rows([a1, a2])
@@ -145,7 +149,7 @@ class BuildRowsTest(TestCase):
         self.assertEqual([h["tab_id"] for h in headers], ["10", "20"])
 
     def test_children_sorted_by_window_index(self) -> None:
-        # 排序键是窗口序号，不是窗口名字母序（否则 wt:1 会排到 zsh 后面）
+        # Sort key is the window index, not the window name (or wt:1 would sort after zsh)
         a1 = _agent(pid=1, win_name="wt:1", win_idx=3)
         a2 = _agent(pid=2, win_name="zsh", win_idx=1)
         a3 = _agent(pid=3, win_name="enclave", win_idx=2)
@@ -154,7 +158,7 @@ class BuildRowsTest(TestCase):
         self.assertEqual([a["pid"] for a in agents], [2, 3, 1])
 
     def test_done_children_float_to_top_within_group(self) -> None:
-        # 组内顺序：✅ 待关注 → ⏳ 运行中 → 空闲（同态内再按窗口序号）
+        # Within a group: ✅ unseen -> ⏳ running -> idle (then by window index within the same state)
         idle = _agent(pid=1, win_idx=1, pi_running=False, pi_done=False)
         done = _agent(pid=2, win_idx=2, pi_running=False, pi_done=True)
         running = _agent(pid=3, win_idx=3, pi_running=True, pi_done=False)
@@ -164,16 +168,17 @@ class BuildRowsTest(TestCase):
 
 
 class ParsePanesTest(TestCase):
-    """list-panes 输出解析：分隔符与用户可改的窗口名不能互相干扰。"""
+    """list-panes output parsing: separators and user-editable window names must not clash."""
 
-    # 分隔符本身就是与 tmux 查询格式的契约，故意与模块常量绑定
+    # The separator is itself the contract with the tmux query format, so bind it to
+    # the module constant on purpose
     SEP = switch_pi_agent._PANE_SEP  # pylint: disable=protected-access
 
     @staticmethod
     def _record(*overrides: tuple[int, str]) -> str:
-        # 字段顺序与 collect_agents 的 -F 查询一致：
+        # Field order matches collect_agents' -F query:
         # session / win_id / win_idx / win_name / pane_cmd / @pi_running / @pi_done
-        # / session_windows / @pi_win_fmt / @pi_repo / pane_id / pane_pid
+        # / session_windows / @pi_win_fmt / pane_current_path / pane_id / pane_pid
         fields = [
             "win-5",
             "@32",
@@ -183,14 +188,15 @@ class ParsePanesTest(TestCase):
             "1",
             "",
             "4",
-            "@wt:2",
-            "repo",
+            "pi",
+            "/repo/.worktrees/2",
             "%32",
             "28556",
         ]
         for index, value in overrides:
             fields[index] = value
-        # 与真实查询格式一致：末尾也带一个分隔符（记录边界的换行落在下一字段开头）
+        # Match the real query format: also end with a separator (the record-boundary
+        # newline lands at the next field's start)
         return ParsePanesTest.SEP.join(fields) + ParsePanesTest.SEP
 
     def test_parses_all_fields(self) -> None:
@@ -201,8 +207,8 @@ class ParsePanesTest(TestCase):
         self.assertTrue(pane["pi_running"])
         self.assertFalse(pane["pi_done"])
         self.assertEqual(pane["sess_win_count"], 4)
-        self.assertEqual(pane["fmt"], "@wt:2")
-        self.assertEqual(pane["repo"], "repo")
+        self.assertEqual(pane["fmt"], "pi")
+        self.assertEqual(pane["pane_path"], "/repo/.worktrees/2")
 
     def test_parses_done_flag(self) -> None:
         panes = switch_pi_agent.parse_panes(self._record((5, ""), (6, "1")))
@@ -210,14 +216,17 @@ class ParsePanesTest(TestCase):
         self.assertTrue(panes[28556]["pi_done"])
 
     def test_window_name_with_colon_separator_is_not_dropped(self) -> None:
-        # 旧实现用 ":::" 分隔且要求字段数恰好匹配，窗口名含 ":::" 会静默丢行
-        line = self._record((3, "a:::b"), (8, "a:::b@main"))
+        # The old version split on ":::" and required an exact field count; a window
+        # name with ":::" silently dropped the row
+        line = self._record((3, "a:::b"), (8, "a:::b"), (9, "/repo/a:::b"))
         panes = switch_pi_agent.parse_panes(line)
         self.assertEqual(panes[28556]["win_name"], "a:::b")
-        self.assertEqual(panes[28556]["fmt"], "a:::b@main")
+        self.assertEqual(panes[28556]["fmt"], "a:::b")
+        self.assertEqual(panes[28556]["pane_path"], "/repo/a:::b")
 
     def test_window_name_with_newline_does_not_shift_records(self) -> None:
-        # 换行会把一行撑成两行；它应只被从窗口名里抹掉，后续记录不能错位
+        # A newline would split one row in two; it must only be scrubbed from the
+        # window name, with later records still aligned
         output = (
             self._record((3, "a\nb"))
             + "\n"
@@ -231,7 +240,7 @@ class ParsePanesTest(TestCase):
     def test_ignores_empty_and_malformed_trailing_fields(self) -> None:
         self.assertEqual(switch_pi_agent.parse_panes(""), {})
         self.assertEqual(switch_pi_agent.parse_panes("\n"), {})
-        # 不足字段数的残行不应崩，也不应产出半个 pane
+        # A short leftover row must not crash or produce half a pane
         self.assertEqual(switch_pi_agent.parse_panes("a\x1fb\x1fc"), {})
 
     def test_multiple_records_keep_their_own_fields(self) -> None:
@@ -248,31 +257,64 @@ class ParsePanesTest(TestCase):
 
 
 class WinLabelTest(TestCase):
-    """窗口标签应与 tmux 状态栏 @pi_win_fmt 对齐，且不重抄 tmux 侧逻辑。"""
+    """Window label lines up with the tmux status bar @pi_win_fmt.
 
-    def test_non_enclave_uses_expanded_fmt_as_is(self) -> None:
+    The name comes from tmux, the place from the helper.
+    """
+
+    def test_non_enclave_uses_rendered_name_and_helper_where(self) -> None:
         self.assertEqual(
-            switch_pi_agent.win_label(_agent(pane_cmd="zsh", fmt="zsh@main")),
+            switch_pi_agent.win_label(_agent(pane_cmd="zsh", fmt="zsh")),
             "zsh@main",
         )
 
-    def test_enclave_asks_helper_and_keeps_tmux_where_suffix(self) -> None:
-        # @pi_win_fmt 在 list-panes 里只剩 "@wt:2"，应用名由 helper 补在 @ 之前
-        agent = _agent(pane_cmd="enclave", fmt="@wt:2", win_name="wt:2")
+    def test_non_git_directory_has_no_where_suffix(self) -> None:
+        self.assertEqual(
+            switch_pi_agent.win_label(_agent(pane_cmd="zsh", fmt="zsh", where="")),
+            "zsh",
+        )
+
+    def test_worktree_where_is_appended_after_name(self) -> None:
+        self.assertEqual(
+            switch_pi_agent.win_label(_agent(fmt="pi", where="wt:2")), "pi@wt:2"
+        )
+
+    def test_enclave_asks_helper_for_name(self) -> None:
+        # In list-panes the name part of @pi_win_fmt is empty (#() does not run), so
+        # the helper fills in the app name
+        agent = _agent(pane_cmd="enclave", fmt="", win_name="wt:2", where="wt:2")
         with mock.patch.object(switch_pi_agent, "run", return_value="pi\n"):
             self.assertEqual(switch_pi_agent.win_label(agent), "pi@wt:2")
 
-    def test_enclave_without_where_suffix_is_left_alone(self) -> None:
-        # pane_in_mode 时 @pi_win_fmt 就是 #W（无 @），不应硬塞应用名
+    def test_enclave_in_pane_mode_keeps_rendered_window_name(self) -> None:
+        # In pane_in_mode @pi_win_fmt is just #W, fmt is non-empty, so the helper is not called
         agent = _agent(pane_cmd="enclave", fmt="enclave", win_name="enclave")
         with mock.patch.object(switch_pi_agent, "run") as runner:
-            self.assertEqual(switch_pi_agent.win_label(agent), "enclave")
+            self.assertEqual(switch_pi_agent.win_label(agent), "enclave@main")
         runner.assert_not_called()
 
     def test_helper_failure_falls_back_to_window_name(self) -> None:
-        agent = _agent(pane_cmd="enclave", fmt="@main", win_name="enclave")
+        agent = _agent(pane_cmd="enclave", fmt="", win_name="enclave", where="main")
         with mock.patch.object(switch_pi_agent, "run", return_value=""):
             self.assertEqual(switch_pi_agent.win_label(agent), "enclave@main")
+
+
+class PaneLocationTest(TestCase):
+    def test_splits_helper_output_into_where_and_repo(self) -> None:
+        with mock.patch.object(switch_pi_agent, "run", return_value="pi-kitmux/wt:5\n"):
+            self.assertEqual(
+                switch_pi_agent.pane_location("/x/pi-kitmux/.worktrees/5"),
+                ("wt:5", "pi-kitmux"),
+            )
+
+    def test_non_git_output_is_empty(self) -> None:
+        with mock.patch.object(switch_pi_agent, "run", return_value=""):
+            self.assertEqual(switch_pi_agent.pane_location("/tmp"), ("", ""))
+
+    def test_output_without_separator_is_empty(self) -> None:
+        # If the helper is missing or outputs junk, do not treat a half result as a place
+        with mock.patch.object(switch_pi_agent, "run", return_value="garbage"):
+            self.assertEqual(switch_pi_agent.pane_location("/tmp"), ("", ""))
 
 
 class CwdSuffixTest(TestCase):
@@ -312,10 +354,8 @@ class CwdSuffixTest(TestCase):
 
 class FormatChildTest(TestCase):
     def test_mirrors_status_bar_cell(self) -> None:
-        # 「序号 + ⏳ + 名称@位置」，与 tmux.conf 的 window-status-format 同构
-        agent = _agent(
-            pid=42, session="win-5", win_idx=2, sess_win_count=4, fmt="pi@main"
-        )
+        # "index + ⏳ + name@place", same shape as tmux.conf's window-status-format
+        agent = _agent(pid=42, session="win-5", win_idx=2, sess_win_count=4)
         text, ansi = switch_pi_agent.format_child(agent, show_session=False)
         self.assertTrue(text.startswith("   └ 42     2: ⏳ pi@main"))
         self.assertIn("\x1b[33m⏳ \x1b[0mpi@main", ansi)
@@ -342,28 +382,33 @@ class FormatChildTest(TestCase):
         self.assertNotIn("\x1b[33m", ansi)
 
     def test_no_kitty_tab_keeps_session_in_child(self) -> None:
-        agent = _agent(folder="repo", fmt="pi@main", pi_running=False, tab_id="")
+        agent = _agent(folder="repo", pi_running=False, tab_id="")
         text, _ = switch_pi_agent.format_child(agent, show_session=True)
         self.assertIn("main: pi@main", text)
 
     def test_worktree_root_does_not_repeat_folder(self) -> None:
-        agent = _agent(folder="1", fmt="pi@wt:1", pi_running=False)
+        agent = _agent(folder="1", where="wt:1", pi_running=False)
         text, ansi = switch_pi_agent.format_child(agent)
         self.assertTrue(text.endswith("pi@wt:1"))
         self.assertTrue(ansi.endswith("pi@wt:1"))
         self.assertNotIn("cwd:", text)
 
     def test_worktree_subdirectory_labels_folder(self) -> None:
-        agent = _agent(folder="src", fmt="pi@wt:1", pi_running=False)
+        agent = _agent(folder="src", where="wt:1", pi_running=False)
         text, _ = switch_pi_agent.format_child(agent)
         self.assertTrue(text.endswith("pi@wt:1  cwd:src"))
 
     def test_project_subdirectory_labels_folder(self) -> None:
-        agent = _agent(folder="src", fmt="pi@main", pi_running=False)
+        agent = _agent(folder="src", pi_running=False)
         text, _ = switch_pi_agent.format_child(agent)
         self.assertTrue(text.endswith("pi@main  cwd:src"))
 
     def test_no_kitty_tab_keeps_folder_context(self) -> None:
-        agent = _agent(folder="repo", fmt="pi@main", pi_running=False, tab_id="")
+        agent = _agent(folder="repo", pi_running=False, tab_id="")
         text, _ = switch_pi_agent.format_child(agent)
         self.assertTrue(text.endswith("pi@main  cwd:repo"))
+
+    def test_non_git_directory_shows_no_where(self) -> None:
+        agent = _agent(folder="downloads", where="", pi_running=False, tab_id="")
+        text, _ = switch_pi_agent.format_child(agent)
+        self.assertTrue(text.endswith("pi  cwd:downloads"))

@@ -1,23 +1,12 @@
 #!/usr/bin/env python3
-"""switch-pi-agent: fzf 选择并跳转到运行中的 Pi Coding Agent 所在的 Kitty Tab / Byobu Pane.
-
-纯标准库实现：
-- 进程表用单次 `ps axo` 调用获取（比 psutil 全量扫描更快且无依赖）
-- cwd 只对匹配到的少量 pi 进程用 lsof 查询
-- kitty socket 自动发现（KITTY_LISTEN_ON > /tmp/mykitty-* 最新），避免连死 socket 挂起
-- 所有外部命令带 timeout，绝不阻塞几十秒
-"""
-
 import json
 import os
 import re
 import subprocess
 import glob
 
-CMD_TIMEOUT = 3  # 单条外部命令超时（秒）
 
-
-def run(cmd, timeout=CMD_TIMEOUT):
+def run(cmd, timeout=3):
     try:
         return subprocess.check_output(
             cmd, text=True, stderr=subprocess.DEVNULL, timeout=timeout
@@ -26,8 +15,8 @@ def run(cmd, timeout=CMD_TIMEOUT):
         return ""
 
 
-_working_socket = None  # 探测成功的 kitty socket，复用给 focus-tab
-_title_conf = None  # (tab_title_template, tab_title_max_length)，动态缓存
+_working_socket = None  # the kitty socket that worked; reuse it for focus-tab
+_title_conf = None  # (tab_title_template, tab_title_max_length), cached
 
 
 def _socket_candidates():
@@ -35,19 +24,19 @@ def _socket_candidates():
     env = os.environ.get("KITTY_LISTEN_ON")
     if env:
         cands.append(env)
-    # kitty listen_on unix:/tmp/mykitty 实际创建的是 /tmp/mykitty-<PID>
+    # kitty turns listen_on unix:/tmp/mykitty into a real file /tmp/mykitty-<PID>
     cands += [
         "unix:" + s
         for s in sorted(glob.glob("/tmp/mykitty-*"), key=os.path.getmtime, reverse=True)
     ]
-    cands.append("")  # kitty @ 自身的 TTY/环境探测
+    cands.append("")  # let kitty @ probe its own TTY/env
     return cands
 
 
 def get_title_config():
-    """动态读取 kitty.conf 生效的 tab_title_template / tab_title_max_length。
-    用 kitty 自带解析器（kitty +runpy load_config），自动处理 include。
-    注意 load_config() 无参只返回默认值，须显式传配置文件路径。"""
+    """Read the live tab_title_template / tab_title_max_length from kitty.conf.
+    Use kitty's own parser (kitty +runpy load_config) so include lines work.
+    load_config() with no arg gives defaults only, so pass the config path."""
     global _title_conf
     if _title_conf is not None:
         return _title_conf
@@ -71,9 +60,9 @@ _RENDER_VAR = re.compile(r"\{([^{}]*)\}")
 
 
 def render_tab_title(template, index, title, maxlen=0):
-    """按 kitty 的模板渲染纯文本 tab 标题，用于 fzf 显示与 tab bar 一致。
-    支持 {index}/{sup.index}/{title}/{title[:N]}/{max_title_length}；
-    {fmt.*}、{bell_symbol} 等 ANSI/符号占位符在纯文本环境忽略为空。"""
+    """Render a plain-text tab title the way kitty does, so fzf matches the tab bar.
+    Handles {index}/{sup.index}/{title}/{title[:N]}/{max_title_length};
+    ANSI/symbol slots like {fmt.*} and {bell_symbol} become empty in plain text."""
 
     def sub(m):
         expr = m.group(1).strip()
@@ -86,7 +75,7 @@ def render_tab_title(template, index, title, maxlen=0):
             return title[: int(m2.group(1))]
         if expr == "max_title_length":
             return str(maxlen or 0)
-        return ""  # fmt.* / bell_symbol / activity_symbol / tab.* / num_windows 等
+        return ""  # fmt.* / bell_symbol / activity_symbol / tab.* / num_windows, etc.
 
     s = _RENDER_VAR.sub(sub, template)
     if maxlen and len(s) > maxlen:
@@ -95,7 +84,7 @@ def render_tab_title(template, index, title, maxlen=0):
 
 
 def kitty_cmd(*args):
-    """执行 kitty @ 子命令，自动发现可用 socket（结果缓存）。"""
+    """Run a kitty @ subcommand, finding a working socket (the result is cached)."""
     global _working_socket
     if _working_socket is not None:
         return run(
@@ -117,9 +106,9 @@ def kitty_cmd(*args):
 
 
 def get_kitty_tabs():
-    """kitty pane pid -> 该 pane 所在 tab 的标题信息。
-    标题按 kitty.conf 的 tab_title_template 动态渲染（与 tab bar 显示一致），
-    index 为 tab 在所属 OS window 内的位置（与 goto_tab N 对应）。"""
+    """kitty pane pid -> that pane's tab title info.
+    The title is rendered from kitty.conf's tab_title_template (same as the tab bar).
+    index is the tab's spot inside its OS window, matching goto_tab N."""
     output = kitty_cmd("ls")
     if not output:
         return {}
@@ -146,22 +135,25 @@ def get_kitty_tabs():
     return panes
 
 
-# tmux list-panes 输出分隔符。不用 ":::"：窗口名用户可随手改（, 重命名），
-# 含 ":::" 会让整行被静默丢弃、agent 从 picker 里消失。
+# tmux list-panes field separator. Not ":::" — users can rename a window at any
+# time, and a name with ":::" would silently drop the whole line, hiding an agent
+# from the picker.
 _PANE_SEP = "\x1f"
 _PANE_FIELDS = 12
-# 会撑破 fzf 行、让 --accept-nth 行号错位的控制字符
+# Control chars that would break the fzf line and shift --accept-nth row numbers.
 _PANE_CTRL = re.compile(r"[\x00-\x1f\x7f]")
 
 
 def parse_panes(output):
-    """解析 `tmux list-panes` 输出，返回 pane_pid -> 窗口信息。
+    """Parse `tmux list-panes` output into pane_pid -> window info.
 
-    字段与 tmux.conf 的状态栏逐格对齐。记录之间是换行，但窗口名可被用户
-    随意改写、可能含换行，`splitlines()` 会把一行撑成两行导致字段错位。
-    所以查询格式在末尾也多带一个分隔符，这里直接按分隔符切出全部字段、
-    再每 12 个一组重组：窗口名里的换行会留在字段内部（随后被 _PANE_CTRL
-    抹掉），不会影响分组对齐。
+    Fields line up cell by cell with the tmux.conf status bar. Records are
+    newline-separated, but a window name is user-editable and may hold a newline,
+    and `splitlines()` would split one row into two and shift the fields.
+    So the query format also ends with a separator; here we split on the separator
+    to get all fields, then regroup them 12 at a time: a newline inside a window
+    name stays inside its field (and is scrubbed by _PANE_CTRL), so grouping
+    stays aligned.
     """
     fields = [_PANE_CTRL.sub("", field) for field in output.split(_PANE_SEP)]
     panes = {}
@@ -176,7 +168,7 @@ def parse_panes(output):
             pi_done,
             n_wins,
             fmt,
-            repo,
+            pane_path,
             pane_id,
             ppid,
         ) = fields[i : i + _PANE_FIELDS]
@@ -191,7 +183,7 @@ def parse_panes(output):
                 "pi_done": pi_done == "1",
                 "sess_win_count": int(n_wins),
                 "fmt": fmt,
-                "repo": repo,
+                "pane_path": pane_path,
                 "pane_pid": int(ppid),
                 "pane_id": pane_id,
             }
@@ -201,8 +193,8 @@ def parse_panes(output):
 
 
 def get_ps_table():
-    """单次 ps 调用，返回 (pid_map, ppid_map)。
-    pid_map: pid -> (name, cmdline)；ppid_map: pid -> ppid。"""
+    """One ps call returns (pid_map, ppid_map).
+    pid_map: pid -> (name, cmdline); ppid_map: pid -> ppid."""
     out = run(["ps", "axo", "pid=,ppid=,command="], timeout=5)
     pid_map, ppid_map = {}, {}
     for line in out.splitlines():
@@ -220,7 +212,7 @@ def get_ps_table():
 
 
 def ancestor_chain(pid, ppid_map):
-    """pid -> [pid, parent, grandparent, ...]，包含最后的终点祖先，到 launchd(1) 为止。"""
+    """pid -> [pid, parent, grandparent, ...], ending at launchd(1)."""
     chain, cur = [], pid
     while cur not in chain:
         chain.append(cur)
@@ -252,9 +244,9 @@ def collect_agents():
     pid_map, ppid_map = get_ps_table()
     kitty_panes = get_kitty_tabs()
 
-    # tmux client -> kitty tab 映射
+    # map a tmux client to its kitty tab
     session_to_kitty = {}
-    client_tty_by_tab = {}  # kitty tab_id -> 该 tab 内 tmux client 的 tty
+    client_tty_by_tab = {}  # kitty tab_id -> tty of that tab's tmux client
     out = run(
         [
             "tmux",
@@ -277,11 +269,14 @@ def collect_agents():
                         client_tty_by_tab[kitty_panes[p]["tab_id"]] = parts[1]
                     break
 
-    # tmux pane 信息（pane_pid 索引）。状态取 pane 级 @pi_running / @pi_done
-    # （而不是窗口级 @pi_win 投影）：同一个 window 多个 pane 时才能分辨各自状态。
-    # 另取 @pi_win_fmt（名称@位置）/ @pi_repo（项目名，供 cwd 去重）。
-    # 注意 `#()` 在 list-panes 里不执行，enclave 窗口的 @pi_win_fmt 只剩 "@位置"，
-    # 真实应用名由 win_label() 另调 helper 补上。
+    # tmux pane info, indexed by pane_pid. State comes from pane-level @pi_running
+    # / @pi_done (not the window-level @pi_win view), so two panes in one window
+    # can show their own state.
+    # Also grab @pi_win_fmt (name) and pane_current_path (for the git-based place/name).
+    # Note `#()` does not run inside list-panes: the name part of @pi_win_fmt, @pi_repo,
+    # and @pi_where are all empty there (all come from `#()`), so win_label() /
+    # pane_location() call the same helper again to fill in place and project name.
+    # An enclave window even needs the name filled in.
     out = run(
         [
             "tmux",
@@ -299,13 +294,13 @@ def collect_agents():
                     "#{@pi_done}",
                     "#{session_windows}",
                     "#{E:@pi_win_fmt}",
-                    "#{E:@pi_repo}",
+                    "#{pane_current_path}",
                     "#{pane_id}",
                     "#{pane_pid}",
                 )
             )
-            # 末尾分隔符让记录边界的换行落在下一字段开头，parse_panes 才能按
-            # 固定 12 个一组切开；详见 parse_panes 文档
+            # The trailing separator puts the record-boundary newline at the start
+            # of the next field, so parse_panes can cut every 12 fields; see parse_panes.
             + _PANE_SEP,
         ]
     )
@@ -328,6 +323,7 @@ def collect_agents():
 
         cwd = get_cwd(pid)
         folder = os.path.basename(cwd) if cwd != "Unknown" else "Unknown"
+        where, repo = pane_location(t_info["pane_path"]) if t_info else ("", "")
         session = t_info["session"] if t_info else "No Byobu"
         win_name = t_info["win_name"] if t_info else "N/A"
         tab_title = k_info["tab_title"] if k_info else "No Kitty Tab"
@@ -349,7 +345,8 @@ def collect_agents():
                 "pi_running": t_info["pi_running"] if t_info else False,
                 "pi_done": t_info["pi_done"] if t_info else False,
                 "fmt": t_info["fmt"] if t_info else "",
-                "repo": t_info["repo"] if t_info else "",
+                "where": where,
+                "repo": repo,
                 "pane_tmux_pid": t_info["pane_pid"] if t_info else 0,
                 "pane_id": t_info["pane_id"] if t_info else "",
                 "win_id": t_info["win_id"] if t_info else "",
@@ -361,35 +358,56 @@ def collect_agents():
     return agents
 
 
-# 与 tmux.conf 的 window-status-format 保持一致：状态标记与窗口标签同用黄色（⏳/✅ 是 emoji，
-# 实际颜色由字体决定，这里只为与状态栏的 #[fg=yellow] 保持一致）。
+# Match tmux.conf's window-status-format: the status marker and window label share
+# yellow (⏳/✅ are emoji, so the real color comes from the font; this only matches the
+# status bar's #[fg=yellow]).
 _TMUX_HELPER = os.path.expanduser("~/.local/bin/tmux-pane-command.py")
+_REPO_HELPER = os.path.expanduser("~/.local/bin/tmux-pane-repo.py")
 _ANSI_RESET = "\x1b[0m"
 _ANSI_YELLOW = "\x1b[33m"
 
 
-def win_label(agent):
-    """窗口标签，与 tmux 状态栏 @pi_win_fmt 的渲染结果一致（名称@位置）。
+def pane_location(pane_path):
+    """Get a pane's (place, project): `wt:5` / `main` plus the repo name; ("", "") outside git.
 
-    非 enclave 窗口：tmux 已经渲染好（含 18 列截断与 @pi_where），直接采用，
-    不在 Python 里重抄一遍 @pi_where / 截断逻辑，避免两处漂移。
-    enclave 窗口：`#()` 在 list-panes 里不执行，@pi_win_fmt 只剩 "@位置"，
-    故在此实调 tmux-pane-command.py 取真实应用名补到 "@" 之前；
-    取不到时退回窗口名（比硬编码 "enclave" 更有信息量）。
+    tmux `#()` only runs in persistent format strings like the status bar or a title,
+    so list-panes sees an empty @pi_loc. Call the same helper here (one source of
+    truth) instead of copying the git rules. If the helper fails (not deployed, etc.)
+    we also fall back to "", so the picker just loses a @place.
     """
-    fmt = agent["fmt"]
-    if agent["pane_cmd"] != "enclave" or "@" not in fmt:
-        return fmt  # 含 pane_in_mode 时 @pi_win_fmt 就是 #W，无位置的边角情况
-    name = run([_TMUX_HELPER, str(agent["pane_tmux_pid"]), "enclave"]).strip()
-    return f"{name or agent['win_name']}@{fmt.split('@', 1)[1]}"
+    out = run([_REPO_HELPER, pane_path]).strip()
+    repo, sep, where = out.partition("/")
+    if not sep:
+        return "", ""
+    return where, repo
+
+
+def win_label(agent):
+    """Window label, matching the tmux status bar @pi_win_fmt (name@place).
+
+    Name: tmux already rendered it (with the 18-column cut and pane_in_mode's #W),
+    so use it. In enclave windows `#()` does not run in list-panes and the name is
+    empty, so call tmux-pane-command.py for the real app name; if that fails, fall
+    back to the window name.
+    Place: `#()` also does not run, so the place part is always empty in list-panes;
+    pane_location() calls the same helper again (rules not copied). Outside git
+    there is no place, so the label is just the name.
+    """
+    name = agent["fmt"]
+    if not name and agent["pane_cmd"] == "enclave":
+        name = run([_TMUX_HELPER, str(agent["pane_tmux_pid"]), "enclave"]).strip()
+    name = name or agent["win_name"]
+    where = agent["where"]
+    return f"{name}@{where}" if where else name
 
 
 def cwd_suffix(folder, label, repo="", has_tab=False):
-    """返回 picker 行尾的 cwd 补充信息，避免重复父节点已有的项目名。
+    """Return the cwd note at the end of a picker row, skipping a repeated project name.
 
-    `repo` 直接来自 tmux 的 @pi_repo，与 Kitty tab 标题使用同一事实源；
-    不从渲染后的 tab 标题反解析项目名。无 Kitty tab 时没有父节点可去重，
-    因此只应用 worktree 标签这一条规则并保留 cwd 信息。
+    `repo` comes from pane_location() -> tmux-pane-repo.py, the same source as the
+    kitty tab title's @pi_repo; we never parse the project name back out of the
+    rendered title. With no kitty tab there is no parent to dedupe against, so only
+    the worktree rule applies and the cwd stays.
     """
     location = label.rsplit("@", 1)[1] if "@" in label else ""
     if location.startswith("wt:") and location[3:] == folder:
@@ -400,10 +418,10 @@ def cwd_suffix(folder, label, repo="", has_tab=False):
 
 
 def pane_marker(agent):
-    """pane 级三态标记：⏳ 运行中 / ✅ 已完成待关注 / 空。
+    """Pane-level three-state marker: ⏳ running / ✅ done and unseen / empty.
 
-    直接取 pane 级 @pi_running / @pi_done，而不是窗口级聚合的 @pi_win——同一个
-    window 里若一个 pane 在跑、另一个已完成，窗口级只能给出 ⏳，会掩盖后者。
+    Read pane-level @pi_running / @pi_done, not the window-level @pi_win roll-up: if
+    one pane runs and another is done, the window view only shows ⏳ and hides the done one.
     """
     if agent.get("pi_running"):
         return "⏳ "
@@ -413,13 +431,14 @@ def pane_marker(agent):
 
 
 def format_child(agent, show_session=True):
-    """picker 子行：显示可定位上下文、标记和名称@位置。
+    """Picker child row: locate context, marker, and name@place.
 
-    返回 (text, ansi)：text 无色（供测试与回匹配），ansi 喂给 fzf --ansi。
-    Kitty Tab 组已在父节点显示 session 时，show_session 为 False，子行只保留
-    必要的窗口号；无 Kitty Tab 的组仍保留 session 作为定位信息。窗口号只在
-    session 多于一个窗口时显示，与 tmux.conf 的
-    `#{?#{e|>:#{session_windows},1},#I: ,}` 一致。
+    Returns (text, ansi): text has no color (for tests and match-back), ansi goes to
+    fzf --ansi. When the kitty tab group already shows the session in its parent,
+    show_session is False and the child keeps only the needed window number; groups
+    with no kitty tab keep the session as context. The window number shows only when
+    a session has more than one window, matching tmux.conf's
+    `#{?#{e|>:#{session_windows},1},#I: ,}`.
     """
     index = f"{agent['win_idx']}: " if agent["sess_win_count"] > 1 else " "
     session = f"{agent['session']}:" if show_session else ""
@@ -442,16 +461,17 @@ def format_child(agent, show_session=True):
 
 
 def build_rows(agents):
-    """把 agent 列表渲染成按 kitty tab 分组的行（组头 + 缩进子行）。
+    """Turn the agent list into rows grouped by kitty tab (group header + indented children).
 
-    返回 list[dict]，每项：
-    - kind: "tab"（组头）或 "agent"（子行）
-    - text: 无色文本，用于与 fzf 输出精确回匹配
-    - ansi: 带 ANSI 颜色的显示文本，喂给 fzf --ansi
-    - tab_id: 所属 kitty tab（无则为空串）
-    - agent: 仅子行有，指向原 agent dict
-    组头显示为「tab 标题 · session」（多 OS window 时前置 `[win N]`）；
-    组顺序按 (OS window, tab 序号)，无 kitty tab 的组排在最后。
+    Returns list[dict], each with:
+    - kind: "tab" (header) or "agent" (child)
+    - text: plain text, used to match the fzf output exactly
+    - ansi: colored text, fed to fzf --ansi
+    - tab_id: the kitty tab (empty if none)
+    - agent: only on children, points at the original agent dict
+    The header shows "tab title · session" (with a `[win N]` prefix when there are
+    several OS windows); groups are ordered by (OS window, tab index), and the
+    group with no kitty tab goes last.
     """
     groups = {}
     for a in agents:
@@ -485,9 +505,9 @@ def build_rows(agents):
                 "agent": None,
             }
         )
-        # 组内排序：待关注（✅）最前、其次运行中（⏳）、最后空闲；同态内按窗口
-        # 序号排（与 tab 栏从左到右一致，而不是窗口名字母序）。组间顺序不变，
-        # 仍镜像 kitty tab 栏。
+        # Within a group: unseen (✅) first, then running (⏳), then idle; same-state
+        # rows go by window index (matching the tab bar left to right, not window
+        # name order). Group order stays as-is, still mirroring the kitty tab bar.
         for a in sorted(
             grp["agents"],
             key=lambda item: (
@@ -512,30 +532,32 @@ def build_rows(agents):
 
 
 def jump_to(target, our_tty):
-    """跳转原则：只把 *目标* 所在的 tmux client 切到目标 session/window/pane，
-    绝不动当前 tab 里自己的 client（否则当前窗口会被拖走）。"""
+    """Jump rule: switch only the *target's* tmux client to the target session/window/pane.
+    Never touch our own client in the current tab, or the current window would move."""
     if target["tab_id"]:
         kitty_cmd("focus-tab", "-m", f"id:{target['tab_id']}")
     elif target["session"] != "No Byobu":
-        # 无 kitty tab：开一个新 tab attach，避免误点把当前 tab 内容覆盖掉。
-        # 注意 kitty @ 没有 new-tab 子命令，须用 launch --type=tab。
-        # 不传 --tab-title：显式标题会被 kitty 视为覆盖（title_overridden），
-        # 不套 tab_title_template 且冻结不动；不传则和手动 attach 一样，
-        # 标题由活动窗口自动更新并走模板渲染。
+        # No kitty tab: open a new tab and attach, so a misclick can't overwrite the
+        # current tab.
+        # kitty @ has no new-tab subcommand, so use launch --type=tab.
+        # Do not pass --tab-title: an explicit title makes kitty treat it as overridden
+        # (title_overridden), skipping tab_title_template and freezing it; leaving it
+        # out lets the title follow the active window through the template, like a
+        # manual attach.
         kitty_cmd(
             "launch", "--type=tab", "tmux", "attach-session", "-t", target["session"]
         )
     if target["session"] != "No Byobu":
         t_tty = target["client_tty"]
         if target["tab_id"] and t_tty and our_tty and t_tty != our_tty:
-            # 目标 client 在另一个 kitty tab：用 -c 精确切那个 client，
-            # 当前 tab 里自己的 client 不受影响
+            # Target client is in another kitty tab: use -c to switch just that client;
+            # our own client in this tab is untouched.
             run(["tmux", "switch-client", "-c", t_tty, "-t", target["session"]])
         elif target["tab_id"]:
-            # 目标就在当前 tab（t_tty == our_tty），或该 tab 内 client 未映射：
-            # 切自己的 client 即可
+            # Target is in this tab (t_tty == our_tty), or the tab's client is
+            # unmapped: switching our own client is enough.
             run(["tmux", "switch-client", "-t", target["session"]])
-        # 无 kitty tab 时已新开 tab attach，不动当前 client
+        # With no kitty tab we already opened a new tab, so leave the current client alone.
         if target["win_id"]:
             run(["tmux", "select-window", "-t", target["win_id"]])
         if target["pane_id"]:
@@ -545,7 +567,7 @@ def jump_to(target, our_tty):
 def main():
     agents = collect_agents()
     if not agents:
-        print("未检测到运行中的 Pi Coding Agent。[按 Enter 退出]")
+        print("No running Pi Coding Agent found. [Press Enter to exit]")
         input()
         return
 
@@ -553,11 +575,12 @@ def main():
     running = sum(1 for a in agents if a["pi_running"])
     done = sum(1 for a in agents if a["pi_done"])
     header = (
-        "选择 Pi Agent (↑/↓ 选择, Enter 跳转, Esc 取消) —— "
-        f"⏳{running} 运行中 · ✅{done} 待关注 · 按 Kitty Tab 分组"
+        "Pick a Pi Agent (↑/↓ select, Enter jump, Esc cancel) —— "
+        f"⏳{running} running · ✅{done} unseen · grouped by Kitty tab"
     )
-    # 回车时用 --accept-nth='{n}' 回传该行在输入里的序号（--no-sort 下即 rows 下标）。
-    # 即便两个 tab 标题完全相同，也能精确定位到被选中的那一条，不依赖显示文本做唯一键。
+    # On Enter, --accept-nth='{n}' returns the row's index in the input (with --no-sort
+    # that is the rows index). So even two tabs with the same title still land on the
+    # exact row picked, without using display text as a unique key.
     fzf_cmd = [
         "fzf",
         "--header",
@@ -575,7 +598,7 @@ def main():
         )
         selected, _ = proc.communicate(input="\n".join(r["ansi"] for r in rows))
     except FileNotFoundError:
-        print("未找到 fzf，请先运行: brew install fzf")
+        print("fzf not found. Run: brew install fzf")
         input()
         return
     if proc.returncode != 0 or not selected or not selected.strip():
@@ -586,7 +609,7 @@ def main():
     except (ValueError, IndexError):
         return
 
-    # 组头：只聚焦该 kitty tab；无 tab 的组头（No Kitty Tab）无动作
+    # Group header: just focus that kitty tab; a "No Kitty Tab" header does nothing.
     if row["kind"] == "tab":
         if row["tab_id"]:
             kitty_cmd("focus-tab", "-m", f"id:{row['tab_id']}")

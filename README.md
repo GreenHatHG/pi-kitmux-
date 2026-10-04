@@ -10,10 +10,11 @@ Pi Coding Agent 的终端多路复用工具集：用 `fzf` 选择并跳转到运
 | `switch-pi-agent.py` | 主脚本。扫描进程表找到所有运行中的 Pi Agent，定位其所在的 Kitty Tab / Byobu 窗格与工作目录，用 `fzf` 交互选择后跳转（按 Kitty Tab 分组展示；子行的 tmux 状态栏信息与底部 tab 栏逐格对齐） |
 | `kitty-tab-sync.ts` | Pi 扩展。综合 `agent_start` / `agent_settled`、阻塞式 UI prompt 与 watchdog 生命周期，用 pane 级 `@pi_running` / `@pi_done` 作事实源，写逐窗口 `@pi_win`（tmux 窗口栏 ⏳ 运行中 / ✅ 已完成待关注）与会话级 `@pi_total`（kitty 标题 ⏳N ✅M）；不发 bell |
 | `tmux-pane-command.py` | tmux 状态栏 helper。当 `pane_current_command` 只能看到沙盒 wrapper `enclave` 时，从前台 leader 的完整 `enclave run ...` 启动命令直接提取真实应用名 |
+| `tmux-pane-repo.py` | tmux 状态栏 helper。用 git 求出 pane 工作目录的 `<项目名>/<位置>`：主仓为 `main`，linked worktree 为 `wt:<worktree 名>`，非 git 目录输出空串。一次调用同时供 `@pi_repo` 与 `@pi_where`，也是 picker 侧同一事实源（`#()` 在 `list-panes` 里不执行，只能另调） |
 | `tmux-pi-ack.py` | tmux 状态栏 helper（`after-select-window` / `after-select-pane` hook 调用）。切到某个 window 时把该 window 的 ✅（done-unseen）清成已读，并立即重算 `@pi_win` / `@pi_total`；负责「看一眼即已读」的即时生效 |
 | `pi-tab-monitor.sh` | 早期轮询方案：后台循环用 `pgrep` 检测 pi 进程并改写终端标题（已被 `kitty-tab-sync.ts` 事件驱动方案取代，保留备用） |
 | `scripts/check.sh` | 一键验证：pre-commit 静态检查（ruff / codespell / vulture / mypy / pyright / pylint）+ 单元测试 |
-| `scripts/deploy.sh` | 部署：把 `tmux.conf` 软链到 `~/.tmux.conf` 与 `~/.byobu/keybindings.tmux`，把三个 tmux helper 软链到 `~/.local/bin/`，把 Pi 扩展软链到 `~/.pi/agent/extensions/`。首次运行会把已存在的真实文件备份为 `*.bak.<时间戳>` |
+| `scripts/deploy.sh` | 部署：把 `tmux.conf` 软链到 `~/.tmux.conf` 与 `~/.byobu/keybindings.tmux`，把四个 tmux helper 软链到 `~/.local/bin/`，把 Pi 扩展软链到 `~/.pi/agent/extensions/`。首次运行会把已存在的真实文件备份为 `*.bak.<时间戳>` |
 | `tests/` | Python helper 的单元测试 |
 
 ## 工作原理
@@ -25,7 +26,7 @@ Pi Coding Agent 的终端多路复用工具集：用 `fzf` 选择并跳转到运
    - Kitty：`kitty @ ls` 列出所有 tab 及其 pane 的 pid；tab 标题按 `kitty.conf` 的 `tab_title_template` 动态渲染，与 tab bar 显示一致
    - Byobu/tmux：`tmux list-panes -a` 按 `pane_pid` 索引，结合祖先链把 Agent 映射到 session / window / pane
    - 工作目录：对匹配到的少量 pid 用 `lsof -d cwd` 查询
-3. **选择跳转**：`fzf` 列表按 Kitty Tab 分组，组头是「tab 标题 · session」，组内每个 agent 一行；子行的 tmux 部分与状态栏逐格对齐 ——「`窗口号: ⏳/✅ 名称@位置`」，其中 `⏳/✅`（pane 级 `@pi_running` / `@pi_done`）、`@位置`（`@pi_win_fmt`）都取自 tmux，enclave 窗口缺失的应用名由 `tmux-pane-command.py` 现补，故不会与 tab 栏漂移；session 已上移到父节点，子行按窗口号排序，顺序也与 tab 栏一致。选中组头只聚焦该 tab，选中子行则同时切到具体 session/window/pane（只动目标 client，不会误动当前 tab 自己的 client）。无 Kitty Tab 的兜底组仍在子行保留 session 名。头部显示全局「⏳N 运行中 · ✅M 待关注」计数。
+3. **选择跳转**：`fzf` 列表按 Kitty Tab 分组，组头是「tab 标题 · session」，组内每个 agent 一行；子行的 tmux 部分与状态栏逐格对齐 ——「`窗口号: ⏳/✅ 名称@位置`」，其中 `⏳/✅`（pane 级 `@pi_running` / `@pi_done`）取自 tmux，`@位置` 与项目名由 `tmux-pane-repo.py` 现调（与状态栏同一事实源），enclave 窗口缺失的应用名由 `tmux-pane-command.py` 现补，故不会与 tab 栏漂移；session 已上移到父节点，子行按窗口号排序，顺序也与 tab 栏一致。选中组头只聚焦该 tab，选中子行则同时切到具体 session/window/pane（只动目标 client，不会误动当前 tab 自己的 client）。无 Kitty Tab 的兜底组仍在子行保留 session 名。头部显示全局「⏳N 运行中 · ✅M 待关注」计数。
 
 安全细节：
 
@@ -47,11 +48,15 @@ Pi Coding Agent 的终端多路复用工具集：用 `fzf` 选择并跳转到运
 - 为何要重算：`@pi_win` / `@pi_total` 是扩展从 pane 级事实源算出的投影；若只清 `@pi_done` 而不重算，状态栏上的 `✅` 会残留到扩展的下一个事件——而空转的 agent 可能永远等不到下一个事件
 - helper 未部署时 hook 静默跳过；重算规则与 `kitty-tab-sync.ts` 的 `broadcastStatus()` 保持一致（改一处要同步另一处）
 
-窗口栏位置标签（`tmux.conf`）：
+窗口栏位置标签（`tmux.conf` + `tmux-pane-repo.py`）：
 
-- 统一为「名称@位置」，位置由 `@pi_where` 计算：路径含 `/.worktrees/` 显示 `wt:<目录名>`（即分支名），否则显示 `main`
-- 因此 enclave 窗口显示 `pi@main` / `pi@wt:5`；非 enclave 窗口显示 `#W@<位置>`（如 `zsh@main`）
-- kitty 标题（`set-titles-string`）用 `@pi_repo`：去掉 `/.worktrees/...` 后取仓库根目录名，故同一仓库的所有 worktree 固定显示同一个 basename（如 `pi-kitmux`），不再随 worktree 变化
+- 统一为「名称@位置」，位置与项目名都由 `tmux-pane-repo.py` 用 git 求出：pane 在 linked worktree 内显示 `wt:<worktree 名>`，在主仓内显示 `main`，**不在 git 仓库内则不显示 `@位置`**（只留名称）
+- 因此 worktree 显示 `pi@wt:5`；非 enclave 窗口显示 `#W@<位置>`（如 `zsh@main`）；非 git 目录显示 `zsh`
+- `git rev-parse --git-dir` 与 `--git-common-dir` 相等即主仓，不等即 linked worktree；项目名取 common-dir 的父目录名，故同一仓库的所有 worktree 同名
+- 之所以不用纯格式串：判断「是否在 worktree 的子目录里」需要取回 worktree 根名，而 tmux 的 `s|A|B|` 不支持反向引用；`#{b:pane_current_path}` 只能给 cwd 的 basename（子目录里会得出 `wt:src`）
+- helper 输出一行 `<项目名>/<位置>`，`@pi_repo` 取前半、`@pi_where` 把前半换成 `@`。`@pi_loc` 只写一次 `#(...)`：同一格式串里重复出现的同一命令 tmux 只执行一次，不必为两个消费者 fork 两次 git
+- kitty 标题（`set-titles-string`）用 `@pi_repo`，即仓库根目录名，故同一仓库的所有 worktree 固定显示同一个 basename（如 `pi-kitmux`），不再随 worktree 变化；非 git 目录没有项目名，回退到 cwd 的 basename（与改动前的行为一致）
+- `switch-pi-agent.py` 的 picker 也从中取位置与项目名：`#()` 只在状态栏/标题这类持久格式串里执行，`tmux list-panes` 拿到的是空串（`@pi_win_fmt`、`@pi_repo`、`@pi_where` 都直接或间接来自 `#()`），故 `pane_location()` 直调同一个 helper 复算，规则不重抄
 - tab 正文抽成 `@pi_win_fmt`，`window-status-format` 与 `window-status-current-format` 用 `#{E:@pi_win_fmt}` 共用，避免两行漂移
 - 窗口栏只保留 Pi 状态标记（`@pi_win` 的 `⏳` / `✅`），**删掉**原生 `window_bell_flag` 的红 `◉` 与 `window_activity_flag` 的青 `●`：`◉` 与 `✅` 语义重复且会被任意程序的 bell 误触发，`●`（非当前窗口有输出）对常驻输出的 agent 几乎常亮、不携带信息
 - 「已完成」的清除靠 `after-select-window` / `after-select-pane` hook（见 `tmux-pi-ack.py`），`✅` 因此是「待关注」而非永久粘滞标记
@@ -73,7 +78,7 @@ Pi Coding Agent 的终端多路复用工具集：用 `fzf` 选择并跳转到运
 
 - Python ≥ 3.14（仅标准库）
 - [`uv`](https://docs.astral.sh/uv/)（用于 dev 依赖与测试）
-- 运行时依赖：`kitty`、`tmux`（Byobu 底层即是 tmux）、`fzf`
+- 运行时依赖：`kitty`、`tmux`（Byobu 底层即是 tmux）、`fzf`、`git` ≥ 2.31（`tmux-pane-repo.py` 用 `rev-parse --path-format=absolute`）
 
 ### 日常使用
 

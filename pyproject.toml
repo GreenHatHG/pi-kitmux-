@@ -1,7 +1,7 @@
 [project]
 name = "pi-kitmux"
 version = "0.1.0"
-description = "switch-pi-agent：fzf 选择并跳转到运行中的 Pi Coding Agent 所在的 Kitty Tab / Byobu Pane"
+description = "switch-pi-agent: pick a running Pi Coding Agent with fzf and jump to its Kitty tab / Byobu pane"
 requires-python = ">=3.14"
 dependencies = []
 
@@ -14,7 +14,7 @@ dev = [
 ]
 
 [tool.uv]
-# 单文件脚本工具，无包结构，uv 只安装 dev 依赖，不构建/安装项目本身
+# Single-file script tools with no package layout; uv installs dev deps only, no build/install of the project
 package = false
 
 [build-system]
@@ -45,7 +45,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.mccabe]
-# switch-pi-agent 的 collect_agents / main 为既有的多分支调度逻辑（圈复杂度 13），不改脚本本体
+# collect_agents / main in switch-pi-agent are existing branchy dispatch logic (complexity 13); leave the script body alone
 max-complexity = 15
 
 [tool.vulture]

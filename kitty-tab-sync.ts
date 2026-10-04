@@ -2,19 +2,28 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execFileSync } from "node:child_process";
 import * as path from "node:path";
 
-// 状态分四个去处：
-//   - pane 级 @pi_running：事实源（本 pane 的任务是否仍未完成；含 watchdog 续跑），pane 销毁自动清除。
-//   - pane 级 @pi_done：本 pane 上一轮已真正跑完且未被新一轮覆盖，pane 销毁自动清除。
-//   - window 级 @pi_win："⏳ "（有 pane 在跑，优先）/ "✅ "（全部跑完）/ ""，tmux/byobu 窗口栏逐窗口展示。
-//   - session 级 @pi_total："⏳N ✅M "（本 session 运行中 / 已完成待关注的任务数），kitty tab 标题用。
-//     放 session 级是关键：新开的 tmux 窗口不需要等下一次广播就能在标题里看到总数。
-//     ✅ = 「跑完但还没看过」；切到该 window 时由 tmux-pi-ack.py 清除（tmux.conf 的 after-select-* hook）。
-// 不再发 BEL：kitty 的 🔔 是 OS window 级、任何程序的 bell 都会误触发，且与 ✅M 语义重复。
-// 已知边缘情形（SIGKILL / move-pane 跨 session）计数暂时偏差，但下次任意事件重算即自愈。
+// Status lives in four places:
+//   - pane-level @pi_running: the source of truth (is this pane's task still unfinished,
+//     including a watchdog rerun); tmux clears it when the pane dies.
+//   - pane-level @pi_done: this pane's last run really finished and was not covered by a
+//     new run; tmux clears it when the pane dies.
+//   - window-level @pi_win: "⏳ " (a pane is running, wins) / "✅ " (all done) / "", shown
+//     per window in the tmux/byobu window bar.
+//   - session-level @pi_total: "⏳N ✅M " (running / done-and-unseen task counts for this
+//     session), used in the kitty tab title.
+//     Session level matters: a newly opened tmux window shows the total without waiting
+//     for the next broadcast.
+//     ✅ means "finished but not looked at yet"; tmux-pi-ack.py clears it when you switch
+//     to that window (the after-select-* hooks in tmux.conf).
+// No BEL anymore: kitty's 🔔 is OS-window-wide, any program's bell sets it off, and it
+// duplicates ✅M.
+// Known edge cases (SIGKILL / move-pane across sessions) can skew counts for a while, but
+// the next event recomputes and heals them.
 //
-// 所有对 tmux 的「写」都经由 StatusSink：本机由 TmuxStatusSink 用 CLI 实现。
-// 未来若 pi 跑在远端（VPS），只需换一个 sink 实现（例如把事件发往 SSH 反向 socket），
-// 状态判定逻辑不必改动。读操作（display-message / list-panes）目前仍是本机 tmux 专属。
+// Every tmux write goes through StatusSink: locally TmuxStatusSink does it with the CLI.
+// If pi ever runs on a remote box (VPS), just swap in another sink (e.g. send events over
+// an SSH reverse socket); the status logic stays the same. Reads (display-message /
+// list-panes) are still local-tmux only for now.
 type WindowStatus = "running" | "done" | "idle";
 
 interface StatusSink {
@@ -37,37 +46,38 @@ class TmuxStatusSink implements StatusSink {
     try { execFileSync("tmux", args, { stdio: "ignore" }); } catch {}
   }
 
-  // pane 级选项，pane 销毁时自动清除，不会残留
+  // pane-level option; tmux clears it when the pane dies, so nothing lingers
   setPaneRunning(on: boolean): void {
     this.cmd(["set", "-pq", "-t", this.pane, "@pi_running", on ? "1" : ""]);
   }
 
-  // 与 @pi_running 同理，pane 级、pane 销毁自动清除；跑完置 1，下一轮/退出清空
+  // Like @pi_running: pane-level, auto-cleared when the pane dies; 1 when done, cleared on the next run/exit
   setPaneDone(on: boolean): void {
     this.cmd(["set", "-pq", "-t", this.pane, "@pi_done", on ? "1" : ""]);
   }
 
-  // 每个窗口一个展示态：running 优先，其次 done，否则空
+  // One shown state per window: running first, then done, else empty
   setWindowStatus(windowId: string, status: WindowStatus): void {
     const text = status === "running" ? "⏳ " : status === "done" ? "✅ " : "";
     this.cmd(["set", "-wq", "-t", windowId, "@pi_win", text]);
   }
 
-  // 会话级计数：kitty tab 标题用（⏳ 运行中 / ✅ 已完成待关注）；放 session 级，新开的 tmux 窗口无需等广播即能显示
+  // Session-level count for the kitty tab title (⏳ running / ✅ done-unseen); session level means a new tmux window shows it without a broadcast
   setSessionTotal(sessionId: string, text: string): void {
     this.cmd(["set", "-t", sessionId, "@pi_total", text]);
   }
 
-  // 防御性清理：废弃的 window 级 @pi_status / @pi_done 全局默认值清掉。
-  // 注意：这里清的是「window 级」遗留的 @pi_done；本扩展现用的 @pi_done 是 pane 级
-  // （set -pq），命名空间不同，别把这里的清理误当成在删新功能。
+  // Defensive cleanup: drop the old window-level @pi_status / @pi_done defaults.
+  // Note: this clears the *window-level* leftover @pi_done; the @pi_done this
+  // extension uses now is pane-level (set -pq), a different namespace, so don't
+  // mistake this cleanup for deleting the new feature.
   clearLegacy(): void {
     this.cmd(["set", "-gu", "@pi_status"]);
     this.cmd(["set", "-wgu", "@pi_status"]);
     this.cmd(["set", "-wgu", "@pi_done"]);
   }
 
-  // 立即刷新状态栏（否则要等 status-interval 才更新）
+  // Refresh the status bar now (otherwise it waits for status-interval)
   refresh(): void {
     this.cmd(["refresh-client", "-S"]);
   }
@@ -75,26 +85,28 @@ class TmuxStatusSink implements StatusSink {
 
 const sink: StatusSink = new TmuxStatusSink(process.env.TMUX_PANE ?? "");
 
-// Pi 当前这一轮是否在执行。agent_settled 只结束这一轮，不代表 watchdog 不会稍后续跑。
+// Is Pi's current run in progress? agent_settled only ends this run; a watchdog may rerun later.
 let agentRunning = false;
-// watchdog 自身的监控状态（含倒计时/输入暂停）；由 pi.events 跨扩展同步。
-// 注意这是「watchdog 的状态」而非「agent 的状态」：空会话里它会自行 armed，
-// 因此只在下面 hasRunOnce 为真时，才把它当作「settled 后仍会续跑」的抑制项。
+// watchdog's own state (countdown/input pause), synced across extensions via pi.events.
+// Note this is the *watchdog's* state, not the agent's: it self-arms on an empty session,
+// so only treat it as "will rerun after settle" when hasRunOnce is true below.
 let watchdogActive = false;
-// watchdog 广播的「上一轮被用户按 Esc 打断」：此时它仍 armed（running=true），
-// 但本次空闲不会再续跑，所以不能算作「settled 后仍会续跑」的抑制项，
-// 也不能把这次结束当成「真正跑完」。只有用户发下一条真实消息时 watchdog 才会清回 false。
+// watchdog says the user pressed Esc on the last run: it stays armed (running=true), but
+// this idle spell will not rerun, so it is not a "will rerun" suppressant and this end is
+// not a real finish. Only a real new user message clears it back to false.
 let watchdogInterrupted = false;
-// 本进程是否已经跑过至少一轮。用于把 watchdogActive 收窄到真正有活可续的场景，
-// 否则新开/恢复的空会话会因为 watchdog 自启动而误亮 ⏳。session_start 时复位。
+// Has this process run at least one run? Narrows watchdogActive to cases with real work to
+// continue; otherwise a new/restored empty session would show ⏳ just from the watchdog
+// self-starting. Reset on session_start.
 let hasRunOnce = false;
-// 阻塞式 UI prompt 期间已临时置 idle 的标志（让重复 start/end 幂等）。
+// Set while a blocking UI prompt is open, so we temporarily show idle (makes repeat start/end idempotent).
 let pausedByPrompt = false;
-// 已实际写入 tmux/标题的 effective 状态，避免重复写。
+// The effective state actually written to tmux/title, to avoid double writes.
 let isMarkedRunning = false;
-// pi 进程正在退出（cleanupOnExit）：退出不是「跑完」，不得置 ✅，且需强制清掉旧的 ✅。
+// pi is exiting (cleanupOnExit): exit is not a finish, so never set ✅, and force-clear an old ✅.
 let quitting = false;
-// session_start 期间的状态校正：pane 残留的 @pi_running 被清掉不算「跑完」，抑制误置 ✅。
+// State fix-up during session_start: a leftover pane @pi_running being cleared is not a
+// finish, so suppress a false ✅.
 let suppressDone = false;
 
 function getSessionId(): string | null {
@@ -106,13 +118,14 @@ function getSessionId(): string | null {
   } catch { return null; }
 }
 
-// 读本 pane 的事実源（供启动/重载时恢复内存状态）
+// Read this pane's source of truth (to restore memory state on start/reload)
 function readPaneRunning(): boolean {
   const pane = process.env.TMUX_PANE;
   if (!(process.env.TMUX && pane)) return false;
   try {
-    // -q：pane 上首次还没设过 @pi_running 时 tmux 会向 stderr 打 "invalid option"，
-    // 默认 stdio 会把它漏进 pi 的 TUI；-q + 吞掉 stderr 双保险。
+    // -q: on the first read, tmux prints "invalid option" to stderr for a pane with no
+    // @pi_running yet, and the default stdio leaks it into pi's TUI; -q plus swallowing
+    // stderr is double insurance.
     return execFileSync(
       "tmux", ["show-options", "-pvq", "-t", pane, "@pi_running"],
       { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }
@@ -120,8 +133,8 @@ function readPaneRunning(): boolean {
   } catch { return false; }
 }
 
-// 会话计数文本，与 tmux-pi-ack.py 的 session_total() 保持一致（改一处要同步另一处）：
-//   "⏳N ✅M "，为 0 的部分省略，全 0 时为空串。
+// Session total text, kept the same as session_total() in tmux-pi-ack.py (change one, change the other):
+//   "⏳N ✅M ", drop a zero part, and "" when both are zero.
 function sessionTotalText(running: number, done: number): string {
   const parts: string[] = [];
   if (running > 0) parts.push(`⏳${running}`);
@@ -129,10 +142,11 @@ function sessionTotalText(running: number, done: number): string {
   return parts.length > 0 ? `${parts.join(" ")} ` : "";
 }
 
-// 一次 list-panes 同时算出「每个窗口跑没跑」和「本 session 的运行中 / 待关注数」：
-//   @pi_win   = "⏳ " / "✅ " / ""（window 级，tmux 窗口栏逐窗口；running 优先于 done）
-//   @pi_total = "⏳N ✅M "（session 级，kitty tab 标题；放 session 级后新窗口自动继承）
-// 并发写为 last-writer-wins，偏差窗口毫秒级，下次任意事件自愈。
+// One list-panes call computes both "did each window run" and "running / done-unseen
+// counts for this session":
+//   @pi_win   = "⏳ " / "✅ " / "" (window-level, tmux window bar; running beats done)
+//   @pi_total = "⏳N ✅M " (session-level, kitty tab title; session level lets new windows inherit it)
+// Concurrent writes are last-writer-wins; the skew lasts milliseconds and the next event heals it.
 function broadcastStatus() {
   const pane = process.env.TMUX_PANE;
   const isTmux = Boolean(process.env.TMUX && pane);
@@ -141,10 +155,12 @@ function broadcastStatus() {
   try {
     const sessionId = getSessionId();
     if (!sessionId) return;
-    // 逐窗口聚合三态：只要有 pane 在跑就是 running；否则只要有 pane done 就是 done。
-    // 用 "|" 而非空格分隔：空字段（比如 running 为空、done=1）在空格 join 后是
-    // "@29  1"，再按 /\s+/ split 会把 done 的值挤到 running 位上，把「已完成」误读成
-    // 「运行中」——窗口永远 ⏳、@pi_total 也永远偏高。按字面分隔符 split 则保留空字段。
+    // Roll up three states per window: any running pane means running; otherwise any
+    // done pane means done.
+    // Split on "|", not spaces: an empty field (e.g. running empty, done=1) becomes
+    // "@29  1" after a space join, and a /\s+/ split would shove done's value into
+    // running's slot, reading "done" as "running" — the window would always be ⏳ and
+    // @pi_total always too high. Splitting on the literal separator keeps empty fields.
     const perWindow = new Map<string, WindowStatus>();
     let runningTotal = 0;
     let doneTotal = 0;
@@ -176,14 +192,14 @@ function updateStatus(running: boolean, done: boolean) {
   const isTmux = Boolean(process.env.TMUX);
 
   if (isTmux) {
-    // 自身标记：pane 级选项，pane 销毁时自动清除，不会残留
+    // Our own marker: a pane-level option, auto-cleared when the pane dies.
     sink.setPaneRunning(running);
     sink.setPaneDone(done);
-    // 防御性清理：旧版扩展用的 window 级 @pi_* 已废弃
+    // Defensive cleanup: the old window-level @pi_* are gone.
     sink.clearLegacy();
     broadcastStatus();
   } else {
-    // 兼容非 tmux 环境
+    // Fallback for non-tmux setups
     const folder = path.basename(process.cwd());
     const statusTag = running ? "⏳ " : done ? "✅ " : "";
     process.stdout.write(`\x1b]2;${statusTag}${folder}\x07`);
@@ -191,14 +207,16 @@ function updateStatus(running: boolean, done: boolean) {
 }
 
 function applyEffectiveState() {
-  // UI prompt 表示 AI 正在等人，优先。
-  // watchdogActive 只在已经跑过一轮后生效：那时它代表「本轮 settled 后 watchdog 还会续跑」；
-  // 跑过之前它只说明 watchdog 自我 armed（空会话/恢复会话），与 agent 是否在跑无关。
+  // A UI prompt means the AI is waiting on a person, so it wins.
+  // watchdogActive only counts after at least one run: then it means "the watchdog will
+  // rerun after this run settles"; before that it only means the watchdog self-armed
+  // (empty/restored session) and says nothing about the agent.
   const running = !pausedByPrompt && (agentRunning || (watchdogActive && hasRunOnce && !watchdogInterrupted));
   if (running === isMarkedRunning) return;
   isMarkedRunning = running;
-  // 只有「真正跑完」才置 ✅：等待用户 prompt、pi 退出、session_start 的状态校正，
-  // 以及用户按 Esc 打断（watchdog 不再续跑、这一轮并未真正跑完）都不是完成，均抑制。
+  // Only a real finish gets ✅: waiting on a user prompt, pi exiting, session_start
+  // fix-up, and a user Esc interrupt (watchdog will not rerun; the run did not really
+  // finish) are all suppressed.
   const done = !running && !pausedByPrompt && !quitting && !suppressDone && !watchdogInterrupted;
   updateStatus(running, done);
 }
@@ -211,11 +229,12 @@ function cleanupOnExit() {
   const wasRunning = isMarkedRunning;
   isMarkedRunning = false;
   if (wasRunning) {
-    // 正常 running→false：走常规路径清掉 pane 标记；@pi_done 因 quitting 保持空
+    // Normal running->false: use the usual path to clear the pane marker; @pi_done
+    // stays empty because quitting is set.
     updateStatus(false, false);
   } else if (process.env.TMUX && process.env.TMUX_PANE) {
-    // 已经处于 done/idle：applyEffectiveState 会 early-return，必须强制清掉
-    // pane 上的 @pi_done，避免 ✅ 留在已退出的 pane 上。
+    // Already done/idle: applyEffectiveState would early-return, so force-clear @pi_done
+    // on the pane, keeping a ✅ off an exited pane.
     sink.setPaneRunning(false);
     sink.setPaneDone(false);
     broadcastStatus();
@@ -223,9 +242,10 @@ function cleanupOnExit() {
 }
 
 export default function (pi: ExtensionAPI) {
-  // watchdog 是独立扩展：它在 agent_settled 后倒计时，再用 sendUserMessage 开新一轮。
-  // 这里同步的是「watchdog 自己的状态」，不是 agent 状态：只有它知道本轮 settled 后
-  // 是否还会续跑，所以仅用来抑制提前判定完成（是否生效见 hasRunOnce 门控）。
+  // The watchdog is a separate extension: it counts down after agent_settled, then sends
+  // a message to start a new run. This syncs the *watchdog's* state, not the agent's: only
+  // it knows whether this settled run will rerun, so it is used only to suppress an early
+  // finish (see the hasRunOnce gate).
   pi.events.on("watchdog:state", (raw: unknown) => {
     const state = raw as { running?: unknown; interrupted?: unknown } | undefined;
     watchdogActive = Boolean(state?.running);
@@ -233,19 +253,23 @@ export default function (pi: ExtensionAPI) {
     applyEffectiveState();
   });
 
-  // 启动/热重载时从 pane 事实源恢复已写状态并重算一次；随后查询 watchdog 当前状态，
-  // 避免扩展加载顺序或 reload 导致漏掉它先前发出的广播。
+  // On start/hot reload, restore the written state from the pane source and recompute
+  // once; then ask the watchdog's current state, so load order or a reload cannot miss an
+  // earlier broadcast.
   pi.on("session_start" as any, async (event: any, ctx: any) => {
-    // /new、/resume、/fork 是「换了一个 session」，上一轮的 ✅ 属于旧上下文，清掉；
-    // reload（热重载）和 startup（新进程，正常退出已清过）保留 pane 上的 ✅。
+    // /new, /resume, /fork are "a different session": the old ✅ belongs to the old
+    // context, so clear it. Reload (hot reload) and startup (new process, already cleared
+    // on a clean exit) keep the pane's ✅.
     if (event?.reason !== "reload" && process.env.TMUX && process.env.TMUX_PANE) {
       sink.setPaneDone(false);
     }
-    // 状态校正期间禁止置 ✅：reload 后残留的 @pi_running=1 被清掉是「校正」而非「跑完」
+    // No ✅ during the fix-up: clearing a leftover @pi_running=1 on reload is a
+    // correction, not a finish.
     suppressDone = true;
-    // pane 事实源可能是残留（SIGKILL 等），也可能真是「热重载时 agent 正跑着」——
-    // 两者都表现为 @pi_running=1。再问一次会话是否真的忙（ctx.isIdle），同为真才认定
-    // 本轮在跑，避免把残留当成运行中；isIdle 不可用时保守按否处理。
+    // The pane source can be a leftover (SIGKILL) or a real "agent still running during a
+    // hot reload" — both look like @pi_running=1. Ask once more if the session is really
+    // busy (ctx.isIdle); only if both agree is this run alive, so a leftover is not read
+    // as running. If isIdle is unavailable, treat it as not busy.
     const factRunning = readPaneRunning();
     const busy = factRunning && ctx?.isIdle?.() === false;
     agentRunning = busy;
@@ -253,19 +277,21 @@ export default function (pi: ExtensionAPI) {
     watchdogActive = false;
     watchdogInterrupted = false;
     pausedByPrompt = false;
-    // 保留 pane 事实源不变，交由下方 setTimeout 的校正路径决定是否清除
+    // Leave the pane source unchanged; the setTimeout fix-up below decides whether to clear it.
     isMarkedRunning = factRunning;
-    // 直接读 pane 选项：@pi_done=1 的窗口立即恢复 ✅，且不受其它 session_start 影响
+    // Read the pane option straight: a window with @pi_done=1 shows ✅ right away, and
+    // other session_starts do not affect it.
     broadcastStatus();
-    // 延后一拍，让所有扩展的 session_start handler 先跑完：若 watchdog 会按 env
-    // 自动启动，它会先广播 true；随后 query 再确认最终状态。若没有 watchdog，
-    // query 无响应，apply 会清掉 reload/异常退出留下的旧 pane 标记。
+    // Wait one tick so all extensions' session_start handlers finish first: if the
+    // watchdog auto-starts from env it broadcasts true first, then the query confirms the
+    // final state. With no watchdog the query gets no answer and apply clears the old pane
+    // markers left by a reload/abnormal exit.
     setTimeout(() => {
       watchdogActive = false;
       watchdogInterrupted = false;
       pi.events.emit("watchdog:state:query");
       applyEffectiveState();
-      suppressDone = false; // 必须在 apply 之后复位，否则校正路径可能误置 ✅
+      suppressDone = false; // must run after apply, or the fix-up path could set a false ✅
     }, 0);
   });
 
@@ -275,20 +301,23 @@ export default function (pi: ExtensionAPI) {
     applyEffectiveState();
   });
 
-  // agent_settled 只表示 Pi 当前一轮已完全 settle；若 watchdog 仍 active，
-  // 它还会在倒计时后发消息续跑，所以此时保持 running，不提前判定完成。
+  // agent_settled only means Pi's current run fully settled; if the watchdog is still
+  // active it will send a message and rerun after its countdown, so stay running and do
+  // not call it done early.
   pi.on("agent_settled" as any, async () => {
     agentRunning = false;
     applyEffectiveState();
   });
 
-  // 阻塞式 UI prompt（plan 评审的 select/editor 等）期间语义上是等待用户，
-  // 即使 agent/watchdog 尚未结束，也暂时收掉 ⏳；prompt 结束后按真实状态恢复。
+  // During a blocking UI prompt (plan review select/editor, etc.) we are really waiting on
+  // a person, so drop ⏳ for now even if the agent/watchdog has not ended; restore the real
+  // state when the prompt ends.
   pi.on("ui_prompt_start" as any, async () => {
     if (pausedByPrompt) return;
     pausedByPrompt = true;
-    // 新的交互（prompt）已开始，上一轮的 ✅ 不再代表当前状态；纯 done→prompt 时
-    // applyEffectiveState 会因 running 未变而 early-return，所以这里直接清并广播。
+    // A new interaction (prompt) has started, so the old ✅ no longer describes the current
+    // state; on a pure done->prompt path applyEffectiveState would early-return because
+    // running did not change, so clear and broadcast here.
     if (process.env.TMUX && process.env.TMUX_PANE) sink.setPaneDone(false);
     applyEffectiveState();
     broadcastStatus();
@@ -296,7 +325,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("ui_prompt_end" as any, async (_event: any, ctx: any) => {
     if (!pausedByPrompt) return;
     pausedByPrompt = false;
-    // 弹窗期间本轮若已真正结束（例如被 abort），同步修正 agentRunning。
+    // If this run really ended during the popup (e.g. aborted), fix agentRunning to match.
     if (ctx?.isIdle?.()) agentRunning = false;
     applyEffectiveState();
   });
@@ -310,7 +339,7 @@ export default function (pi: ExtensionAPI) {
     cleanupOnExit();
     process.exit(0);
   });
-  // kill-pane / 关 tab / 关窗口会发 SIGHUP，不清会导致窗口计数残留偏高
+  // kill-pane / close tab / close window sends SIGHUP; not clearing it leaves the window count too high
   process.on("SIGHUP", () => {
     cleanupOnExit();
     process.exit(0);
