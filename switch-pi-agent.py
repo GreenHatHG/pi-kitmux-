@@ -626,8 +626,10 @@ def main():
     # Everything up to here is what opening the popup costs (process start -> fzf): ps / lsof /
     # tmux / kitty queries. Show it in the header so a slow open is visible, not just felt.
     elapsed = time.monotonic() - _T0
+    # Keep the header on two lines: a single long line gets clipped by fzf on narrow
+    # popups, and the tail ("loaded in …") is exactly what you want to see when opening.
     header = (
-        "Pick a Pi Agent (↑/↓ select, Enter jump, Esc cancel) —— "
+        "Pick a Pi Agent (↑/↓ select, Enter jump, Esc cancel)\n"
         f"⏳{running} running · ✅{done} unseen · grouped by Kitty tab"
         f" · loaded in {elapsed:.2f}s"
     )
