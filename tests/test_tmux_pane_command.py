@@ -85,13 +85,43 @@ class ResolvePaneCommandTest(TestCase):
             "enclave",
         )
 
-    def test_falls_back_for_non_enclave_foreground_command(self) -> None:
+    def test_shows_real_command_when_leader_is_not_a_wrapper(self) -> None:
+        # Helper is only called for enclave/interpreter panes; if the leader is
+        # something else (e.g. a race), showing its real name beats the fallback
         responses = iter(["456", "vim README.md"])
         self.assertEqual(
             pane_command.resolve_pane_command(
                 123, "enclave", lambda _args: next(responses)
             ),
-            "enclave",
+            "vim",
+        )
+
+    def test_unwraps_direct_pi_with_rewritten_title(self) -> None:
+        # pi sets process.title = "pi", so ps command shows just "pi" even
+        # though the kernel comm says "node"; the first token is the real app
+        responses = iter([" 12640\n", "pi     \n"])
+        self.assertEqual(
+            pane_command.resolve_pane_command(
+                123, "node", lambda _args: next(responses)
+            ),
+            "pi",
+        )
+
+    def test_falls_back_for_bare_interpreter(self) -> None:
+        # A bare `node server.js` has no better name than the kernel one
+        self.assertEqual(
+            pane_command.resolve_pane_command(
+                123, "node", lambda _args: " 12640\nnode server.js\n"
+            ),
+            "node",
+        )
+
+    def test_falls_back_for_non_interpreter_command(self) -> None:
+        self.assertEqual(
+            pane_command.resolve_pane_command(
+                123, "node", lambda _args: " 12640\nvim README.md\n"
+            ),
+            "node",
         )
 
     def test_sanitizes_fallback(self) -> None:

@@ -36,10 +36,10 @@ Pi Coding Agent 的终端多路复用工具集：用 `fzf` 选择并跳转到运
 
 `tmux-pane-command.py`：
 
-- tmux 原生 `#{pane_current_command}` 只返回前台进程组 leader 的程序名；执行 `enclave run pi` 时因此只能显示 `enclave`
-- helper 根据 `#{pane_pid}` 读取 pane 的 TPGID，再读取该前台 leader 的完整命令行，直接从 `enclave run [options] [--] <command>` 提取 `<command>`
-- `.tmux.conf` 的窗口状态格式只在 `pane_current_command == enclave` 时通过异步 `#(...)` 调用 helper，普通程序显示实时的 tmux `pane_current_command`（前台命令名）
-- 读取失败或进程切换竞态时安全回退为 `enclave`；不会遍历或猜测沙盒中的子进程
+- tmux 原生 `#{pane_current_command}` 只返回内核态程序名：执行 `enclave run pi` 时只能显示 `enclave`；直接跑 `pi`（node shebang 脚本）时只能显示 `node`（`process.title` 改不了内核名，只改 ps 的 argv 区）
+- helper 根据 `#{pane_pid}` 读取 pane 的 TPGID，再读取该前台 leader 的完整命令行：leader 是 `enclave run ...` 就提取 `<command>`；否则 leader 的 ps 首个 token 是真实应用名（pi 会把 `process.title` 设为 `pi`，抹掉其余 argv），不是裸解释器（如 `node server.js`，回退保留内核名）才采用
+- `.tmux.conf` 的窗口状态格式只在 `pane_current_command` 为 `enclave` 或 `node` 时通过异步 `#(...)` 调用 helper，普通程序显示实时的 tmux `pane_current_command`（前台命令名）
+- 读取失败或进程切换竞态时安全回退；不会遍历或猜测沙盒中的子进程
 
 `tmux-pi-ack.py`（ack helper）：
 
