@@ -408,6 +408,41 @@ class CwdSuffixTest(TestCase):
         )
 
 
+class MapSessionsByTitleTest(TestCase):
+    # os.uname().nodename is checked against the tag's host inside
+    # map_sessions_by_title, so pin the fake hostname before each test.
+    def setUp(self) -> None:
+        p = mock.patch(
+            "os.uname",
+            lambda: type("U", (), {"nodename": "vps-host"})(),
+        )
+        p.start()
+        self.addCleanup(p.stop)
+
+    @staticmethod
+    def tabs(*raw_titles: str):
+        return {
+            str(i): {"raw_title": t, "tab_index": i, "tab_id": i}
+            for i, t in enumerate(raw_titles)
+        }
+
+    def test_tag_at_end_after_mosh_prefix_matches(self) -> None:
+        tabs = self.tabs("[mosh] ⏳3 pi-kitmux ⚑vps-ho:win-6")
+        self.assertIn("win-6", switch_pi_agent.map_sessions_by_title(tabs))
+
+    def test_tag_without_mosh_prefix_matches(self) -> None:
+        tabs = self.tabs("⏳1 test ⚑vps-ho:win-5")
+        self.assertIn("win-5", switch_pi_agent.map_sessions_by_title(tabs))
+
+    def test_foreign_host_is_skipped(self) -> None:
+        tabs = self.tabs("[mosh] ⏳3 repo ⚑other:win-6")
+        self.assertEqual(switch_pi_agent.map_sessions_by_title(tabs), {})
+
+    def test_title_without_tag_is_ignored(self) -> None:
+        tabs = self.tabs("[mosh] ⏳3 pi-kitmux")
+        self.assertEqual(switch_pi_agent.map_sessions_by_title(tabs), {})
+
+
 class FormatChildTest(TestCase):
     def test_mirrors_status_bar_cell(self) -> None:
         # "index + ⏳ + name@place", same shape as tmux.conf's window-status-format

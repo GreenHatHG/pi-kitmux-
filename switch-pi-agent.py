@@ -304,21 +304,27 @@ def map_sessions_by_title(tabs_by_id):
     """tmux session name -> kitty tab info, matched via the ⚑host:session title tag.
 
     Matching runs on the RAW title (kitty ls does not truncate it; only the tab bar
-    render does). A tag is anchored at the title start or right after mosh's
-    '[mosh] ' prefix, so a session whose name contains the tag char can't be spoofed
-    by a random repo name later in the title.
+    render does). The tag sits at the END of set-titles-string, so an over-long tab
+    bar title drops the tag first and shows the clean "⏳N repo" part; the raw title
+    keeps it, so match anywhere in the title. The tag's host is cut to 6 chars to
+    keep the tag short, so it is checked as a PREFIX of this machine's hostname
+    (full equality would never match the truncated tag). Spoofing via a repo name
+    containing the tag char is still blocked: the fake tag's host would have to be
+    a prefix of this machine's hostname to pass.
     """
     import re
 
-    tag_re = re.compile(rf"(?:^|\] ){re.escape(_TITLE_TAG)}([^\s]+)")
+    tag_re = re.compile(rf"{re.escape(_TITLE_TAG)}([^\s]+)")
+    my_host = os.uname().nodename.split(".")[0]
     by_session = {}
     for tab in tabs_by_id.values():
         m = tag_re.search(tab["raw_title"])
         if m:
             # 'host:session' — host disambiguates two VPSes running the same session
-            # name; the local host wins so picker rows point at this machine's tab
+            # name; the local host wins so picker rows point at this machine's tab.
+            # Prefix match: the title only carries the first 6 chars of the hostname.
             host, _, sess = m.group(1).partition(":")
-            if host and host != os.uname().nodename.split(".")[0]:
+            if host and not my_host.startswith(host):
                 continue
             key = sess or m.group(1)
             if key not in by_session or tab["tab_index"] < by_session[key]["tab_index"]:
