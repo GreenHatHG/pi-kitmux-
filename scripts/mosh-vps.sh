@@ -10,6 +10,8 @@
 # Usage (on the Mac):
 #   mosh-vps                 # instead of: mosh vps
 #   MOSH_VPS_HOST=mybox mosh-vps ...
+# Runs mosh with --predict=never (no speculative local echo; typing always
+# waits for the server echo).
 #
 # Prerequisites (Mac):
 #   - autossh: brew install autossh
@@ -56,7 +58,7 @@ sock="$(resolve_socket)"
 if [ -z "$sock" ]; then
   # Not a hard failure: everything except tab grouping works without the tunnel
   echo "mosh-vps: no live kitty socket found; connecting without tab grouping" >&2
-  exec mosh "$HOST" "$@"
+  exec mosh --predict=never "$HOST" "$@"
 fi
 
 # One tunnel only: a leftover pair (terminal window closed without exit) is
@@ -81,7 +83,7 @@ if ! pgrep -f "$PAT" >/dev/null; then
   fi
 fi
 
-mosh "$HOST" "$@"
+mosh --predict=never "$HOST" "$@"
 rc=$?
 
 # pkill once is not always enough (the ssh child may outlive the autossh parent),
