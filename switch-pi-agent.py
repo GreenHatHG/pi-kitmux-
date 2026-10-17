@@ -35,7 +35,11 @@ def _socket_candidates():
         "unix:" + s
         for s in sorted(glob.glob("/tmp/mykitty-*"), key=os.path.getmtime, reverse=True)
     ]
-    cands.append("")  # let kitty @ probe its own TTY/env
+    # The empty candidate makes kitty @ probe its own TTY/env — that only works when
+    # we run inside kitty itself. Inside a tmux popup the TTY is the pane, so the
+    # probe can never succeed yet still costs ~2s per call; skip it there.
+    if not os.environ.get("TMUX"):
+        cands.append("")
     return cands
 
 
@@ -149,6 +153,24 @@ _PANE_FIELDS = 13
 # Control chars that would break the fzf line and shift --accept-nth row numbers.
 _PANE_CTRL = re.compile(r"[\x00-\x1f\x7f]")
 
+# tmux 3.5+ escapes control chars in a format's OUTPUT: our \x1f separator comes
+# back as the 4 literal characters \037, a newline as \n, a real backslash doubled.
+# So the parser must undo that escaping before splitting on \x1f (a no-op for older
+# tmux versions that emit the raw separator byte).
+_TMUX_ESCAPES = {"\\": "\\", "n": "\n", "r": "\r", "t": "\t", "f": "\f", "e": "\x1b", "s": " "}
+_TMUX_ESCAPE = re.compile(r"\\(?:([0-7]{3})|(.))")
+
+
+def _tmux_unescape(text):
+    def sub(m):
+        octal, ch = m.group(1), m.group(2)
+        if octal:
+            return chr(int(octal, 8))
+        # An unknown code keeps its char; the backslash is dropped
+        return _TMUX_ESCAPES.get(ch, ch)
+
+    return _TMUX_ESCAPE.sub(sub, text)
+
 
 def parse_panes(output):
     """Parse `tmux list-panes` output into pane_pid -> window info.
@@ -156,12 +178,14 @@ def parse_panes(output):
     Fields line up cell by cell with the tmux.conf status bar. Records are
     newline-separated, but a window name is user-editable and may hold a newline,
     and `splitlines()` would split one row into two and shift the fields.
-    So the query format also ends with a separator; here we split on the separator
-    to get all fields, then regroup them 13 at a time: a newline inside a window
-    name stays inside its field (and is scrubbed by _PANE_CTRL), so grouping
-    stays aligned.
+    So the query format also ends with a separator; here we undo tmux's backslash
+    escaping, split on the separator to get all fields, then regroup them 13 at a
+    time: a newline inside a window name stays inside its field (and is scrubbed by
+    _PANE_CTRL), so grouping stays aligned.
     """
-    fields = [_PANE_CTRL.sub("", field) for field in output.split(_PANE_SEP)]
+    # Unescape the WHOLE output first: tmux 3.5+ turned our \x1f separators into
+    # literal \037, so there is no real \x1f to split on until after unescaping
+    fields = [_PANE_CTRL.sub("", field) for field in _tmux_unescape(output).split(_PANE_SEP)]
     panes = {}
     for i in range(0, len(fields) - _PANE_FIELDS + 1, _PANE_FIELDS):
         (
@@ -235,6 +259,12 @@ def ancestor_chain(pid, ppid_map):
 
 
 def get_cwd(pid):
+    # /proc first: instant, and no lsof needed (some boxes have none); Mac has no
+    # /proc so it falls through to lsof as before
+    try:
+        return os.readlink(f"/proc/{pid}/cwd")
+    except OSError:
+        pass
     out = run(["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"], timeout=2)
     for line in out.splitlines():
         if line.startswith("n/"):
@@ -313,7 +343,7 @@ def collect_agents():
                 )
             )
             # The trailing separator puts the record-boundary newline at the start
-            # of the next field, so parse_panes can cut every 12 fields; see parse_panes.
+            # of the next field, so parse_panes can cut every 13 fields; see parse_panes.
             + _PANE_SEP,
         ]
     )

@@ -243,6 +243,34 @@ class ParsePanesTest(TestCase):
         self.assertFalse(panes[28556]["pi_running"])
         self.assertTrue(panes[28556]["pi_done"])
 
+    def test_tmux_35_escaped_output_is_unescaped(self) -> None:
+        # tmux 3.5+ escapes control chars in format OUTPUT: our \x1f separator comes
+        # back as the literal 4 chars \037, a newline as \n. The parser must undo
+        # that before splitting, or every row is dropped (the real Debian bug).
+        escaped = self._record().replace(
+            ParsePanesTest.SEP, "\\037"
+        ) + "\n"
+        panes = switch_pi_agent.parse_panes(escaped)
+        self.assertEqual(panes[28556]["session"], "win-5")
+        self.assertEqual(panes[28556]["pane_pid"], 28556)
+
+    def test_tmux_escaped_newline_in_window_name(self) -> None:
+        # Same escaping applies to values: a real newline in a window name arrives
+        # as \n and must be restored, then scrubbed, without shifting later records
+        record = self._record((3, "a\\nb"))
+        next_row = self._record((0, "win-9"), (3, "zsh"), (10, "%36"), (11, "56470"))
+        output = record.replace(ParsePanesTest.SEP, "\\037") + "\\n" + next_row.replace(
+            ParsePanesTest.SEP, "\\037"
+        )
+        panes = switch_pi_agent.parse_panes(output)
+        self.assertEqual(panes[28556]["win_name"], "ab")
+        self.assertEqual(panes[56470]["session"], "win-9")
+
+    def test_raw_separator_still_parses(self) -> None:
+        # Older tmux versions emit the raw \x1f byte; both forms must parse
+        panes = switch_pi_agent.parse_panes(self._record() + "\n")
+        self.assertEqual(panes[28556]["session"], "win-5")
+
     def test_window_name_with_colon_separator_is_not_dropped(self) -> None:
         # The old version split on ":::" and required an exact field count; a window
         # name with ":::" silently dropped the row
