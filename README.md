@@ -16,6 +16,8 @@ Pi Coding Agent 的终端多路复用工具集：用 `fzf` 选择并跳转到运
 | `tmux.linux.conf` | Linux 专属配置。`bind v` 不再是 Mac 的 `open -a`，改调 `tmux-open-vscode.py`：先试 SSH RemoteForward 隧道（Mac 监听器收到路径后 `open` 一个 `vscode-remote://` 窗口），隧道不通则降级为 OSC 52 把 URL 写进 Mac 剪贴板；两种失败都向 stderr 说明具体原因 |
 | `tmux-open-vscode.py` | `bind v` 的 helper（VPS 侧）。双路线自动切换 + 失败原因可见：隧道拒绝/挂起/不通分别打印监听器回复、超时信息、RemoteForward 未连接提示 |
 | `scripts/vscode-open-listener.py` | Mac 侧监听器（launchd 常驻，127.0.0.1:19998）。收 VPS 经隧道发来的 `vscode-remote://ssh-remote+vps/...` URL，校验白名单前缀后交给 `open` 弹出 Remote 窗口；只 `open`，不执行任意命令 |
+| `scripts/mosh-vps.sh` | Mac 侧 `mosh vps` 的替代品（`deploy.sh` 软链到 `~/.local/bin/mosh-vps`）。mosh 不能转发任何端口，而 `bind p` 的 kitty tab 分组需要远控 socket 在 VPS 上；wrapper 在进门前按需拉一条 autossh 反向隧道（`-R /tmp/mykitty-remote:<Mac 侧 kitty socket>`），退出 mosh 后拆掉，平时零连接。socket 发现：`$KITTY_LISTEN_ON` 优先，`
+ls -t /tmp/mykitty-*` 逐个探活兜底（避免转发到上轮 kitty 的死 socket）；找不到或隧道起不来时直接降级为无分组的 mosh，不阻塞。前提：Mac kitty.conf `allow_remote_control` + `listen_on unix:/tmp/mykitty.sock`（固定名，不随重启变），autossh 已安装；VPS 侧零改动 |
 | `scripts/com.pi-kitmux.vscode-open-listener.plist` | 上一条的 launchd 配置（KeepAlive + RunAtLoad），`deploy.sh` 在 macOS 上自动安装并加载 |
 | `scripts/check.sh` | 一键验证：pre-commit 静态检查（ruff / codespell / vulture / mypy / pyright / pylint）+ 单元测试 |
 | `scripts/deploy.sh` | 部署：把 `tmux.conf` 软链到 `~/.tmux.conf` 与 `~/.byobu/keybindings.tmux`，平台配置软链到 `~/.tmux.darwin.conf` / `~/.tmux.linux.conf`，五个 tmux helper 软链到 `~/.local/bin/`，Pi 扩展软链到 `~/.pi/agent/extensions/`；macOS 上另装 VS Code 监听器的 launchd 服务。首次运行会把已存在的真实文件备份为 `*.bak.<时间戳>` |
