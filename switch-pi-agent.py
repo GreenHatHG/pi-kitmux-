@@ -116,22 +116,35 @@ def kitty_cmd(*args):
 
 
 def get_kitty_tabs():
-    """kitty pane pid -> that pane's tab title info.
-    The title is rendered from kitty.conf's tab_title_template (same as the tab bar).
-    index is the tab's spot inside its OS window, matching goto_tab N."""
+    """kitty pane pid -> that pane's tab title info, plus the raw tab list.
+
+    The title is rendered from kitty.conf's tab_title_template (same as the tab bar)
+    for display. index is the tab's spot inside its OS window, matching goto_tab N.
+    Also returns the per-tab raw titles (unescaped, NOT truncated — truncation only
+    happens in the tab bar render) keyed by tab_id: the ⚑host:session tag lives in
+    the raw title, and that is how remote sessions map to tabs (pids cannot be
+    compared across machines).
+    """
     output = kitty_cmd("ls")
     if not output:
-        return {}
+        return {}, {}
     try:
         data = json.loads(output)
     except Exception:
-        return {}
+        return {}, {}
     tpl, maxlen = get_title_config()
     n_windows = len(data)
     panes = {}  # pid -> {tab_title, tab_id, tab_index, win_index, n_windows}
+    tabs_by_id = {}  # tab_id -> {raw_title, tab_index, win_index, n_windows}
     for win_idx, win in enumerate(data, 1):
         for idx, tab in enumerate(win.get("tabs", []), 1):
             title = tab.get("title") or "Unnamed Tab"
+            tabs_by_id[tab.get("id")] = {
+                "raw_title": title,
+                "tab_index": idx,
+                "win_index": win_idx,
+                "n_windows": n_windows,
+            }
             info = {
                 "tab_title": render_tab_title(tpl, idx, title, maxlen),
                 "tab_id": tab.get("id"),
@@ -142,7 +155,7 @@ def get_kitty_tabs():
             for w in tab.get("windows", []):
                 if w.get("pid"):
                     panes[w["pid"]] = info
-    return panes
+    return panes, tabs_by_id
 
 
 # tmux list-panes field separator. Not ":::" — users can rename a window at any
@@ -281,34 +294,59 @@ def is_pi(name, cmdline):
     )
 
 
+# The cross-machine identity tag: tmux.conf's set-titles-string injects ⚑host:session,
+# mosh syncs the title to the Mac kitty tab, and the picker matches it there — pids
+# cannot be compared across machines, the title is the only channel that crosses.
+_TITLE_TAG = "⚑"
+
+
+def map_sessions_by_title(tabs_by_id):
+    """tmux session name -> kitty tab info, matched via the ⚑host:session title tag.
+
+    Matching runs on the RAW title (kitty ls does not truncate it; only the tab bar
+    render does). A tag is anchored at the title start or right after mosh's
+    '[mosh] ' prefix, so a session whose name contains the tag char can't be spoofed
+    by a random repo name later in the title.
+    """
+    import re
+
+    tag_re = re.compile(rf"(?:^|\] ){re.escape(_TITLE_TAG)}([^\s]+)")
+    by_session = {}
+    for tab in tabs_by_id.values():
+        m = tag_re.search(tab["raw_title"])
+        if m:
+            # 'host:session' — host disambiguates two VPSes running the same session
+            # name; the local host wins so picker rows point at this machine's tab
+            host, _, sess = m.group(1).partition(":")
+            if host and host != os.uname().nodename.split(".")[0]:
+                continue
+            key = sess or m.group(1)
+            if key not in by_session or tab["tab_index"] < by_session[key]["tab_index"]:
+                by_session[key] = tab
+    return by_session
+
+
 def collect_agents():
     pid_map, ppid_map = get_ps_table()
-    kitty_panes = get_kitty_tabs()
+    kitty_panes, tabs_by_id = get_kitty_tabs()
+    session_by_title = map_sessions_by_title(tabs_by_id)
 
-    # map a tmux client to its kitty tab
-    session_to_kitty = {}
-    client_tty_by_tab = {}  # kitty tab_id -> tty of that tab's tmux client
+    # tmux client tty per session (for jump_to's targeted switch-client). The tty is
+    # a VPS-local fact from list-clients; which kitty tab each session lives in comes
+    # from the title tag above (remote) or the pid ancestry below (same machine).
+    client_tty_by_session = {}
     out = run(
         [
             "tmux",
             "list-clients",
             "-F",
-            "#{client_pid}:::#{client_tty}:::#{client_session}",
+            "#{client_tty}:::#{client_session}",
         ]
     )
     for line in out.strip().splitlines():
         parts = line.split(":::")
-        if len(parts) == 3:
-            try:
-                cpid = int(parts[0])
-            except ValueError:
-                continue
-            for p in ancestor_chain(cpid, ppid_map):
-                if p in kitty_panes:
-                    session_to_kitty[parts[2]] = kitty_panes[p]
-                    if parts[1]:
-                        client_tty_by_tab[kitty_panes[p]["tab_id"]] = parts[1]
-                    break
+        if len(parts) == 2 and parts[0]:
+            client_tty_by_session[parts[1]] = parts[0]
 
     # tmux pane info, indexed by pane_pid. State comes from pane-level @pi_running
     # / @pi_done (not the window-level @pi_win view), so two panes in one window
@@ -360,8 +398,11 @@ def collect_agents():
             continue
         seen.add(pane_key)
 
-        k_info = (session_to_kitty.get(t_info["session"]) if t_info else None) or next(
-            (kitty_panes[p] for p in chain if p in kitty_panes), None
+        # Remote (title tag) first: it also works when the client's pid ancestry is
+        # on another machine; pid matching stays as the same-machine fallback
+        k_info = (session_by_title.get(t_info["session"]) if t_info else None) or next(
+            (kitty_panes[p] for p in chain if p in kitty_panes),
+            None,
         )
 
         cwd = get_cwd(pid)
@@ -394,8 +435,8 @@ def collect_agents():
                 "pane_tmux_pid": t_info["pane_pid"] if t_info else 0,
                 "pane_id": t_info["pane_id"] if t_info else "",
                 "win_id": t_info["win_id"] if t_info else "",
-                "client_tty": client_tty_by_tab.get(k_info["tab_id"], "")
-                if k_info
+                "client_tty": client_tty_by_session.get(t_info["session"], "")
+                if t_info
                 else "",
             }
         )
