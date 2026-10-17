@@ -6,15 +6,19 @@ Pi Coding Agent 的终端多路复用工具集：用 `fzf` 选择并跳转到运
 
 | 文件 | 说明 |
 |---|---|
-| `tmux.conf` | tmux / Byobu 配置的唯一事实源。`scripts/deploy.sh` 把它同时软链到 `~/.tmux.conf`（原生 tmux 读取）与 `~/.byobu/keybindings.tmux`（Byobu 的 `profiles/tmuxrc` 第 35 行 source），保证两边配置一致。窗口栏显示「名称@位置」（如 `pi@main` / `pi@wt:5`），一眼区分主仓与各 worktree |
+| `tmux.conf` | tmux / Byobu 配置的唯一事实源，Mac 与 VPS 同一份。`scripts/deploy.sh` 把它同时软链到 `~/.tmux.conf`（原生 tmux 读取）与 `~/.byobu/keybindings.tmux`（Byobu 的 `profiles/tmuxrc` 第 35 行 source），保证两边配置一致。窗口栏显示「名称@位置」（如 `pi@main` / `pi@wt:5`），一眼区分主仓与各 worktree |
+| `tmux.darwin.conf` | macOS 专属配置（目前只有 `bind v` 用 `open -a` 打开 VS Code）。由 `tmux.conf` 末尾的 `if-shell` 在 Darwin 上 source，Linux 上不加载；跨平台差异集中在这一个小文件，主体配置两边永远相同 |
 | `switch-pi-agent.py` | 主脚本。扫描进程表找到所有运行中的 Pi Agent，定位其所在的 Kitty Tab / Byobu 窗格与工作目录，用 `fzf` 交互选择后跳转（按 Kitty Tab 分组展示；子行的 tmux 状态栏信息与底部 tab 栏逐格对齐；✅ 子行在名称后附完成时刻，头部显示本次弹窗的加载耗时） |
 | `kitty-tab-sync.ts` | Pi 扩展。综合 `agent_start` / `agent_settled`、阻塞式 UI prompt 与 watchdog 生命周期，用 pane 级 `@pi_running` / `@pi_done`（并记录完成时刻 `@pi_done_at`）作事实源，写逐窗口 `@pi_win`（tmux 窗口栏 ⏳ 运行中 / ✅ 已完成待关注）与会话级 `@pi_total`（kitty 标题 ⏳N ✅M）；跑完发 BEL 让 kitty 的 Dock 图标跳动 |
 | `tmux-pane-command.py` | tmux 状态栏 helper。当 `pane_current_command` 只能看到沙盒 wrapper `enclave` 时，从前台 leader 的完整 `enclave run ...` 启动命令直接提取真实应用名 |
 | `tmux-pane-repo.py` | tmux 状态栏 helper。用 git 求出 pane 工作目录的 `<项目名>/<位置>`：主仓为 `main`，linked worktree 为 `wt:<worktree 名>`，非 git 目录输出空串。一次调用同时供 `@pi_repo` 与 `@pi_where`，也是 picker 侧同一事实源（`#()` 在 `list-panes` 里不执行，只能另调） |
 | `tmux-pi-ack.py` | tmux 状态栏 helper（`after-select-window` / `after-select-pane` hook，以及 `MouseDown1Status` 绑定调用）。切到或点中某个 window 时把该 window 的 ✅（done-unseen）清成已读，并立即重算 `@pi_win` / `@pi_total`；负责「看一眼即已读」的即时生效 |
-| `pi-tab-monitor.sh` | 早期轮询方案：后台循环用 `pgrep` 检测 pi 进程并改写终端标题（已被 `kitty-tab-sync.ts` 事件驱动方案取代，保留备用） |
+| `tmux.linux.conf` | Linux 专属配置。`bind v` 不再是 Mac 的 `open -a`，改调 `tmux-open-vscode.py`：先试 SSH RemoteForward 隧道（Mac 监听器收到路径后 `open` 一个 `vscode-remote://` 窗口），隧道不通则降级为 OSC 52 把 URL 写进 Mac 剪贴板；两种失败都向 stderr 说明具体原因 |
+| `tmux-open-vscode.py` | `bind v` 的 helper（VPS 侧）。双路线自动切换 + 失败原因可见：隧道拒绝/挂起/不通分别打印监听器回复、超时信息、RemoteForward 未连接提示 |
+| `scripts/vscode-open-listener.py` | Mac 侧监听器（launchd 常驻，127.0.0.1:19998）。收 VPS 经隧道发来的 `vscode-remote://ssh-remote+vps/...` URL，校验白名单前缀后交给 `open` 弹出 Remote 窗口；只 `open`，不执行任意命令 |
+| `scripts/com.pi-kitmux.vscode-open-listener.plist` | 上一条的 launchd 配置（KeepAlive + RunAtLoad），`deploy.sh` 在 macOS 上自动安装并加载 |
 | `scripts/check.sh` | 一键验证：pre-commit 静态检查（ruff / codespell / vulture / mypy / pyright / pylint）+ 单元测试 |
-| `scripts/deploy.sh` | 部署：把 `tmux.conf` 软链到 `~/.tmux.conf` 与 `~/.byobu/keybindings.tmux`，把四个 tmux helper 软链到 `~/.local/bin/`，把 Pi 扩展软链到 `~/.pi/agent/extensions/`。首次运行会把已存在的真实文件备份为 `*.bak.<时间戳>` |
+| `scripts/deploy.sh` | 部署：把 `tmux.conf` 软链到 `~/.tmux.conf` 与 `~/.byobu/keybindings.tmux`，平台配置软链到 `~/.tmux.darwin.conf` / `~/.tmux.linux.conf`，五个 tmux helper 软链到 `~/.local/bin/`，Pi 扩展软链到 `~/.pi/agent/extensions/`；macOS 上另装 VS Code 监听器的 launchd 服务。首次运行会把已存在的真实文件备份为 `*.bak.<时间戳>` |
 | `tests/` | Python helper 的单元测试 |
 
 ## 工作原理

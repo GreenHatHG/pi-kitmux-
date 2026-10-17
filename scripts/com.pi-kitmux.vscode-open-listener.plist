@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- launchd service for vscode-open-listener.py; deploy.sh loads it with launchctl.
+     KeepAlive: restart if it ever dies; RunAtLoad: start at login. -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.pi-kitmux.vscode-open-listener</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>REPO_ROOT/scripts/vscode-open-listener.py</string>
+    </array>
+    <key>KeepAlive</key>
+    <true/>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/tmp/pi-kitmux-vscode-listener.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/pi-kitmux-vscode-listener.log</string>
+</dict>
+</plist>
