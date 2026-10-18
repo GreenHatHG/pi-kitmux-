@@ -7,6 +7,7 @@ shows a clean "⏳3 repo" while switch-pi-agent.py's picker still decodes the
 tag from kitty ls's raw title to map a tmux session to its kitty tab
 (pids cannot be compared across machines, the title is the only channel).
 """
+
 import os
 import sys
 

@@ -12,14 +12,18 @@ from unittest import TestCase, mock
 _SCRIPT = Path(__file__).resolve().parent.parent / "switch-pi-agent.py"
 
 
-def _encode_tag(payload: str) -> str:
-    """Load tmux-title-tag.py (the encode side) and encode one payload."""
-    spec = importlib.util.spec_from_file_location(
-        "tmux_title_tag", _SCRIPT.parent / "tmux-title-tag.py"
-    )
+def _load_module(path):
+    """Load a sibling script as a module; assert makes the Optional type go away."""
+    spec = importlib.util.spec_from_file_location("tmux_title_tag", path)
+    assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.encode_tag(payload)
+    return module
+
+
+def _encode_tag(payload: str) -> str:
+    """Load tmux-title-tag.py (the encode side) and encode one payload."""
+    return _load_module(_SCRIPT.parent / "tmux-title-tag.py").encode_tag(payload)
 
 
 _spec = importlib.util.spec_from_file_location("switch_pi_agent", _SCRIPT)
@@ -259,9 +263,7 @@ class ParsePanesTest(TestCase):
         # tmux 3.5+ escapes control chars in format OUTPUT: our \x1f separator comes
         # back as the literal 4 chars \037, a newline as \n. The parser must undo
         # that before splitting, or every row is dropped (the real Debian bug).
-        escaped = self._record().replace(
-            ParsePanesTest.SEP, "\\037"
-        ) + "\n"
+        escaped = self._record().replace(ParsePanesTest.SEP, "\\037") + "\n"
         panes = switch_pi_agent.parse_panes(escaped)
         self.assertEqual(panes[28556]["session"], "win-5")
         self.assertEqual(panes[28556]["pane_pid"], 28556)
@@ -271,8 +273,10 @@ class ParsePanesTest(TestCase):
         # as \n and must be restored, then scrubbed, without shifting later records
         record = self._record((3, "a\\nb"))
         next_row = self._record((0, "win-9"), (3, "zsh"), (10, "%36"), (11, "56470"))
-        output = record.replace(ParsePanesTest.SEP, "\\037") + "\\n" + next_row.replace(
-            ParsePanesTest.SEP, "\\037"
+        output = (
+            record.replace(ParsePanesTest.SEP, "\\037")
+            + "\\n"
+            + next_row.replace(ParsePanesTest.SEP, "\\037")
         )
         panes = switch_pi_agent.parse_panes(output)
         self.assertEqual(panes[28556]["win_name"], "ab")
@@ -425,25 +429,20 @@ class DecodeTitleTagTest(TestCase):
     # encode to build test payloads so a format drift breaks a test, not prod.
     @staticmethod
     def _spec():
-        s = importlib.util.spec_from_file_location(
-            "tmux_title_tag",
-            Path(__file__).resolve().parent.parent / "tmux-title-tag.py",
+        return _load_module(
+            Path(__file__).resolve().parent.parent / "tmux-title-tag.py"
         )
-        m = importlib.util.module_from_spec(s)
-        s.loader.exec_module(m)
-        return m
 
     def test_roundtrip_and_invisibility(self) -> None:
         tag_mod = self._spec()
         title = "⏳3 pi-kitmux" + tag_mod.encode_tag("vps-host:win-6")
-        self.assertEqual(
-            switch_pi_agent.decode_title_tag(title), "vps-host:win-6"
-        )
+        self.assertEqual(switch_pi_agent.decode_title_tag(title), "vps-host:win-6")
         # Every payload char is zero-width: the rendered tab shows only the prefix
         self.assertEqual(
-            title.replace(tag_mod.Z0, "").replace(tag_mod.Z1, "").replace(
-                tag_mod.START, ""
-            ).replace(tag_mod.END, ""),
+            title.replace(tag_mod.Z0, "")
+            .replace(tag_mod.Z1, "")
+            .replace(tag_mod.START, "")
+            .replace(tag_mod.END, ""),
             "⏳3 pi-kitmux",
         )
 
@@ -456,7 +455,7 @@ class DecodeTitleTagTest(TestCase):
         self.assertEqual(switch_pi_agent.decode_title_tag("⏳3 repo"), "")
 
     def test_broken_frames_are_rejected(self) -> None:
-        tag_mod = self._spec()
+        self._spec()
         # No end marker / no start marker / odd bit count / foreign chars in the frame
         for bad in (
             "x\u206010110101",
@@ -471,10 +470,10 @@ class MapSessionsByTitleTest(TestCase):
     # os.uname().nodename is checked against the tag's host inside
     # map_sessions_by_title, so pin the fake hostname before each test.
     def setUp(self) -> None:
-        p = mock.patch(
-            "os.uname",
-            lambda: type("U", (), {"nodename": "vps-host"})(),
-        )
+        def fake_uname():
+            return type("U", (), {"nodename": "vps-host"})()
+
+        p = mock.patch("os.uname", fake_uname)
         p.start()
         self.addCleanup(p.stop)
 

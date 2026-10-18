@@ -18,7 +18,6 @@ and it lands in tmux's message log, so a silent no-op is never the answer:
 
 import base64
 import socket
-import subprocess
 import sys
 
 # Port the Mac-side listener watches; the ssh config RemoteForward maps it back

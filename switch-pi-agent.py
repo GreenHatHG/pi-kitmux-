@@ -170,19 +170,27 @@ _PANE_CTRL = re.compile(r"[\x00-\x1f\x7f]")
 # back as the 4 literal characters \037, a newline as \n, a real backslash doubled.
 # So the parser must undo that escaping before splitting on \x1f (a no-op for older
 # tmux versions that emit the raw separator byte).
-_TMUX_ESCAPES = {"\\": "\\", "n": "\n", "r": "\r", "t": "\t", "f": "\f", "e": "\x1b", "s": " "}
+_TMUX_ESCAPES = {
+    "\\": "\\",
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+    "f": "\f",
+    "e": "\x1b",
+    "s": " ",
+}
 _TMUX_ESCAPE = re.compile(r"\\(?:([0-7]{3})|(.))")
 
 
 def _tmux_unescape(text):
-    def sub(m):
+    def _unescape_one(m: "re.Match[str]") -> str:
         octal, ch = m.group(1), m.group(2)
         if octal:
             return chr(int(octal, 8))
         # An unknown code keeps its char; the backslash is dropped
         return _TMUX_ESCAPES.get(ch, ch)
 
-    return _TMUX_ESCAPE.sub(sub, text)
+    return _TMUX_ESCAPE.sub(_unescape_one, text)
 
 
 def parse_panes(output):
@@ -198,7 +206,9 @@ def parse_panes(output):
     """
     # Unescape the WHOLE output first: tmux 3.5+ turned our \x1f separators into
     # literal \037, so there is no real \x1f to split on until after unescaping
-    fields = [_PANE_CTRL.sub("", field) for field in _tmux_unescape(output).split(_PANE_SEP)]
+    fields = [
+        _PANE_CTRL.sub("", field) for field in _tmux_unescape(output).split(_PANE_SEP)
+    ]
     panes = {}
     for i in range(0, len(fields) - _PANE_FIELDS + 1, _PANE_FIELDS):
         (
