@@ -42,6 +42,14 @@ link "$root/tmux-pi-ack.py" "$HOME/.local/bin/tmux-pi-ack.py"
 link "$root/tmux-open-vscode.py" "$HOME/.local/bin/tmux-open-vscode.py"
 link "$root/kitty-tab-sync.ts" "$HOME/.pi/agent/extensions/kitty-tab-sync.ts"
 
+# macOS only: tssh wrapper that resolves the live kitty remote-control socket
+# (its name always embeds kitty's PID, so it changes per kitty restart) and
+# opens the reverse tunnel with tssh itself — no autossh, no cleanup: the
+# tunnel lives and dies with the connection. On Linux this file just sits there.
+if [ "$(uname -s)" = "Darwin" ]; then
+  link "$root/scripts/tssh-vps.sh" "$HOME/.local/bin/tssh-vps"
+fi
+
 # macOS only: the VS Code Remote opener (listens on 127.0.0.1:19998 for the VPS's
 # `bind v` coming through the SSH RemoteForward tunnel). On Linux these files just sit
 # there — tmux-open-vscode.py is used on the VPS, the listener/plist are not.
