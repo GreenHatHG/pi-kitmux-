@@ -294,41 +294,61 @@ def is_pi(name, cmdline):
     )
 
 
-# The cross-machine identity tag: tmux.conf's set-titles-string injects ⚑host:session,
-# mosh syncs the title to the Mac kitty tab, and the picker matches it there — pids
-# cannot be compared across machines, the title is the only channel that crosses.
-_TITLE_TAG = "⚑"
+# The cross-machine identity tag: tmux.conf's set-titles-string appends a
+# zero-width-encoded "host:session" (tmux-title-tag.py), the remote login syncs the title to the
+# Mac kitty tab, and the picker decodes it there — pids cannot be compared across
+# machines, the title is the only channel that crosses.
+_TAG_BITS = {"\u200b": "0", "\u200c": "1"}
+_TAG_START, _TAG_END = "\u2060", "\ufeff"
+
+
+def decode_title_tag(raw_title):
+    """Extract the zero-width-encoded tag from a tab title; "" if none.
+
+    The tag sits between a word-joiner (start) and a BOM (end); each byte is 8
+    zero-width chars (ZWS=0, ZWNJ=1). A plain title has no such runs, so an
+    exact frame match can't be spoofed by normal text.
+    """
+    i = raw_title.find(_TAG_START)
+    if i < 0:
+        return ""
+    j = raw_title.find(_TAG_END, i + 1)
+    if j < 0:
+        return ""
+    bits = raw_title[i + 1 : j]
+    if not bits or any(c not in _TAG_BITS for c in bits):
+        return ""
+    if len(bits) % 8:
+        return ""
+    try:
+        data = bytes(
+            int("".join(_TAG_BITS[c] for c in bits[k : k + 8]), 2)
+            for k in range(0, len(bits), 8)
+        )
+        return data.decode()
+    except (ValueError, UnicodeDecodeError):
+        return ""
 
 
 def map_sessions_by_title(tabs_by_id):
-    """tmux session name -> kitty tab info, matched via the ⚑host:session title tag.
+    """tmux session name -> kitty tab info, matched via the zero-width title tag.
 
     Matching runs on the RAW title (kitty ls does not truncate it; only the tab bar
-    render does). The tag sits at the END of set-titles-string, so an over-long tab
-    bar title drops the tag first and shows the clean "⏳N repo" part; the raw title
-    keeps it, so match anywhere in the title. The tag's host is cut to 6 chars to
-    keep the tag short, so it is checked as a PREFIX of this machine's hostname
-    (full equality would never match the truncated tag). Spoofing via a repo name
-    containing the tag char is still blocked: the fake tag's host would have to be
-    a prefix of this machine's hostname to pass.
+    render does). The tag is invisible in the rendered tab (zero-width chars), so
+    the tab always shows the clean "⏳N repo"; decoding reads kitty ls's raw
+    string, so rendering/truncation never matters.
     """
-    import re
-
-    tag_re = re.compile(rf"{re.escape(_TITLE_TAG)}([^\s]+)")
     my_host = os.uname().nodename.split(".")[0]
     by_session = {}
     for tab in tabs_by_id.values():
-        m = tag_re.search(tab["raw_title"])
-        if m:
-            # 'host:session' — host disambiguates two VPSes running the same session
-            # name; the local host wins so picker rows point at this machine's tab.
-            # Prefix match: the title only carries the first 6 chars of the hostname.
-            host, _, sess = m.group(1).partition(":")
-            if host and not my_host.startswith(host):
-                continue
-            key = sess or m.group(1)
-            if key not in by_session or tab["tab_index"] < by_session[key]["tab_index"]:
-                by_session[key] = tab
+        # 'host:session' — host disambiguates two VPSes running the same session
+        # name; the local host wins so picker rows point at this machine's tab.
+        host, _, sess = decode_title_tag(tab["raw_title"]).partition(":")
+        if not host or host != my_host:
+            continue
+        key = sess or host
+        if key not in by_session or tab["tab_index"] < by_session[key]["tab_index"]:
+            by_session[key] = tab
     return by_session
 
 

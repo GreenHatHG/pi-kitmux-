@@ -35,18 +35,12 @@ link "$root/tmux.linux.conf" "$HOME/.tmux.linux.conf"
 
 # Runtime helpers and the Pi extension
 link "$root/switch-pi-agent.py" "$HOME/.local/bin/switch-pi-agent.py"
+link "$root/tmux-title-tag.py" "$HOME/.local/bin/tmux-title-tag.py"
 link "$root/tmux-pane-command.py" "$HOME/.local/bin/tmux-pane-command.py"
 link "$root/tmux-pane-repo.py" "$HOME/.local/bin/tmux-pane-repo.py"
 link "$root/tmux-pi-ack.py" "$HOME/.local/bin/tmux-pi-ack.py"
 link "$root/tmux-open-vscode.py" "$HOME/.local/bin/tmux-open-vscode.py"
 link "$root/kitty-tab-sync.ts" "$HOME/.pi/agent/extensions/kitty-tab-sync.ts"
-
-# macOS only: mosh wrapper that carries the kitty remote-control socket to the VPS
-# (a reverse ssh tunnel only while mosh runs — mosh itself cannot forward anything).
-# On Linux this file just sits there: the tunnel is a Mac-side thing.
-if [ "$(uname -s)" = "Darwin" ]; then
-  link "$root/scripts/mosh-vps.sh" "$HOME/.local/bin/mosh-vps"
-fi
 
 # macOS only: the VS Code Remote opener (listens on 127.0.0.1:19998 for the VPS's
 # `bind v` coming through the SSH RemoteForward tunnel). On Linux these files just sit

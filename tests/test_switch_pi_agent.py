@@ -10,6 +10,18 @@ from pathlib import Path
 from unittest import TestCase, mock
 
 _SCRIPT = Path(__file__).resolve().parent.parent / "switch-pi-agent.py"
+
+
+def _encode_tag(payload: str) -> str:
+    """Load tmux-title-tag.py (the encode side) and encode one payload."""
+    spec = importlib.util.spec_from_file_location(
+        "tmux_title_tag", _SCRIPT.parent / "tmux-title-tag.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.encode_tag(payload)
+
+
 _spec = importlib.util.spec_from_file_location("switch_pi_agent", _SCRIPT)
 assert (
     _spec is not None and _spec.loader is not None
@@ -408,6 +420,53 @@ class CwdSuffixTest(TestCase):
         )
 
 
+class DecodeTitleTagTest(TestCase):
+    # tmux-title-tag.py is the single source of truth for the frame; load its
+    # encode to build test payloads so a format drift breaks a test, not prod.
+    @staticmethod
+    def _spec():
+        s = importlib.util.spec_from_file_location(
+            "tmux_title_tag",
+            Path(__file__).resolve().parent.parent / "tmux-title-tag.py",
+        )
+        m = importlib.util.module_from_spec(s)
+        s.loader.exec_module(m)
+        return m
+
+    def test_roundtrip_and_invisibility(self) -> None:
+        tag_mod = self._spec()
+        title = "⏳3 pi-kitmux" + tag_mod.encode_tag("vps-host:win-6")
+        self.assertEqual(
+            switch_pi_agent.decode_title_tag(title), "vps-host:win-6"
+        )
+        # Every payload char is zero-width: the rendered tab shows only the prefix
+        self.assertEqual(
+            title.replace(tag_mod.Z0, "").replace(tag_mod.Z1, "").replace(
+                tag_mod.START, ""
+            ).replace(tag_mod.END, ""),
+            "⏳3 pi-kitmux",
+        )
+
+    def test_non_ascii_payload_roundtrips(self) -> None:
+        tag_mod = self._spec()
+        title = "t" + tag_mod.encode_tag("vps-host:会话-1")
+        self.assertEqual(switch_pi_agent.decode_title_tag(title), "vps-host:会话-1")
+
+    def test_plain_title_has_no_tag(self) -> None:
+        self.assertEqual(switch_pi_agent.decode_title_tag("⏳3 repo"), "")
+
+    def test_broken_frames_are_rejected(self) -> None:
+        tag_mod = self._spec()
+        # No end marker / no start marker / odd bit count / foreign chars in the frame
+        for bad in (
+            "x\u206010110101",
+            "\u200b\u200b\u200b\u200b\u200b\u200b\u200b\u200b\ufeff",
+            "\u2060\u200b\ufeff",
+            "\u2060a\ufeff",
+        ):
+            self.assertEqual(switch_pi_agent.decode_title_tag(bad), "")
+
+
 class MapSessionsByTitleTest(TestCase):
     # os.uname().nodename is checked against the tag's host inside
     # map_sessions_by_title, so pin the fake hostname before each test.
@@ -426,20 +485,24 @@ class MapSessionsByTitleTest(TestCase):
             for i, t in enumerate(raw_titles)
         }
 
-    def test_tag_at_end_after_mosh_prefix_matches(self) -> None:
-        tabs = self.tabs("[mosh] ⏳3 pi-kitmux ⚑vps-ho:win-6")
+    @staticmethod
+    def tagged(visible: str, tag: str) -> str:
+        return visible + _encode_tag(tag)
+
+    def test_tag_at_end_matches(self) -> None:
+        tabs = self.tabs(self.tagged("⏳3 pi-kitmux", "vps-host:win-6"))
         self.assertIn("win-6", switch_pi_agent.map_sessions_by_title(tabs))
 
-    def test_tag_without_mosh_prefix_matches(self) -> None:
-        tabs = self.tabs("⏳1 test ⚑vps-ho:win-5")
+    def test_tag_without_prefix_matches(self) -> None:
+        tabs = self.tabs(self.tagged("⏳1 test", "vps-host:win-5"))
         self.assertIn("win-5", switch_pi_agent.map_sessions_by_title(tabs))
 
     def test_foreign_host_is_skipped(self) -> None:
-        tabs = self.tabs("[mosh] ⏳3 repo ⚑other:win-6")
+        tabs = self.tabs(self.tagged("⏳3 repo", "other:win-6"))
         self.assertEqual(switch_pi_agent.map_sessions_by_title(tabs), {})
 
     def test_title_without_tag_is_ignored(self) -> None:
-        tabs = self.tabs("[mosh] ⏳3 pi-kitmux")
+        tabs = self.tabs("⏳3 pi-kitmux")
         self.assertEqual(switch_pi_agent.map_sessions_by_title(tabs), {})
 
 
