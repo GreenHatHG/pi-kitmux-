@@ -135,12 +135,16 @@ def get_kitty_tabs():
     tpl, maxlen = get_title_config()
     n_windows = len(data)
     panes = {}  # pid -> {tab_title, tab_id, tab_index, win_index, n_windows}
-    tabs_by_id = {}  # tab_id -> {raw_title, tab_index, win_index, n_windows}
+    tabs_by_id = {}  # tab_id -> same keys + raw_title (the zero-width tag lives there)
     for win_idx, win in enumerate(data, 1):
         for idx, tab in enumerate(win.get("tabs", []), 1):
             title = tab.get("title") or "Unnamed Tab"
+            # tabs_by_id entries feed map_sessions_by_title -> k_info, so they must
+            # carry every field collect_agents() reads, not just the raw title
             tabs_by_id[tab.get("id")] = {
                 "raw_title": title,
+                "tab_title": render_tab_title(tpl, idx, title, maxlen),
+                "tab_id": tab.get("id"),
                 "tab_index": idx,
                 "win_index": win_idx,
                 "n_windows": n_windows,
