@@ -55,8 +55,16 @@ fi
 # StreamLocalBindUnlink: drop a stale /tmp/mykitty-remote left by a previous
 # ssh session before binding; ExitOnForwardFailure: fail loudly instead of
 # sitting on a connection that forwards nothing.
+# 19998 is the VS Code opener port: tmux-open-vscode.py on the VPS connects to
+# 127.0.0.1:19998, and this forward carries it to the Mac-side listener
+# (scripts/vscode-open-listener.py, launchd). TCP port is fixed, no PID problem.
+# Binding the remote port succeeds even when the Mac listener is down — the
+# helper then just gets connection refused and falls back to OSC 52.
+# NOTE: if ~/.ssh/config already has a RemoteForward 19998 line for Host vps,
+# remove it — a duplicate bind + ExitOnForwardFailure would kill the connection.
 exec tssh \
   -o ExitOnForwardFailure=yes \
   -o StreamLocalBindUnlink=yes \
   -R "${FWD}:${sock}" \
+  -R 19998:127.0.0.1:19998 \
   "$HOST" "$@"
