@@ -47,9 +47,12 @@ check_path() {
 
   # The kernel keeps a listener alive after its file is gone; that listener can never
   # be reached again, and that is exactly the state the picker cannot recover from.
+  # Exit 3 (not 2): this connection's tunnel is dead, but a path the picker cannot see
+  # does not hurt it, and every connection made before the per-path fix looks like
+  # this — so it must not fail the whole report forever.
   if [ ! -e "$path" ]; then
-    echo "     !! no file on disk: listener orphaned, unreachable forever"
-    return 2
+    echo "     !! no file on disk: this connection's tunnel is dead (orphan listener)"
+    return 3
   fi
 
   # How many live listeners claim this same path. More than one means every binder but
@@ -92,28 +95,50 @@ PY
   return 0
 }
 
-# Count of live connections vs paths the picker can actually use. Fewer usable paths
-# than connections means some connections share one and are shadowed by it — a client
-# cannot tell which one is behind a shared path, so this ratio is the honest signal.
-# A shared path still leaves the picker (and usually the newest connection) working,
-# so it is reported loudly but is not the same failure as a missing file.
+# Health of the whole picture. The honest signal is not "connections vs paths":
+# pre-fix connections left listeners whose file is gone (orphans, harmless but they
+# inflate the count), and a shared path can still leave the newest binder working.
+# So report the three counts separately and only warn where it means something.
 summary() {
-  local n_conn n_path
+  local n_conn n_path n_usable path orphans
   n_conn=$(tsshd_pids | wc -l)
   n_path=$(claimed_paths | wc -l)
-  echo "== connections: ${n_conn}, distinct paths: ${n_path}"
-  if [ "${n_path:-0}" -eq 0 ]; then
-    echo "   !! none of the ${n_conn} connection(s) forwarded a socket we can see"
+  n_usable=0
+  orphans=""
+  for path in $(claimed_paths); do
+    if [ -e "$path" ]; then
+      n_usable=$((n_usable + 1))
+    else
+      orphans="$orphans $path"
+    fi
+  done
+  echo "== connections: ${n_conn}, distinct paths: ${n_path}, paths with a file: ${n_usable}"
+  if [ -n "$orphans" ]; then
+    echo "   note: these paths have live listeners but no file (old shared-name orphans,"
+    echo "         harmless — nothing can ever connect to them):${orphans}"
+  fi
+  if [ "$n_usable" -eq 0 ]; then
+    echo "   !! no path the picker can open — bind p will show No Kitty Tab"
     return 2
   fi
-  [ "$n_conn" -gt "$n_path" ] || return 0
-  echo "   !! $((n_conn - n_path)) connection(s) share a path with another one:"
-  echo "      only the newest binder owns it; the rest are shadowed, but the path still works"
-  return 2
+  # Live listeners competing for one existing file is the real shadowing case.
+  for path in $(claimed_paths); do
+    [ -e "$path" ] || continue
+    local n_listen
+    n_listen=$(ss -xl 2>/dev/null | grep -c "[[:space:]]${path}[[:space:]]")
+    if [ "${n_listen:-0}" -gt 1 ]; then
+      echo "   !! ${n_listen} live listeners share ${path}: all but the newest are shadowed"
+      return 2
+    fi
+  done
+  return 0
 }
 
 # What the user actually sees: run the picker's own collection with its normal socket
 # discovery and count how many agents failed to get a tab. This is the bottom line.
+# An agent with no tmux session (a pi subagent run outside tmux) legitimately has no
+# tab, so only agents that DO live in a session are counted as failures — otherwise
+# every healthy run would report a problem.
 end_to_end() {
   python3 - "$root/switch-pi-agent.py" <<'PY'
 import importlib.util, re, sys
@@ -123,10 +148,18 @@ spec.loader.exec_module(m)
 strip = lambda s: re.sub(r"[\u200b\u200c\u2060\ufeff]", "", s)
 agents = m.collect_agents()
 no_tab = [a for a in agents if not a["tab_id"]]
-print(f"   agents={len(agents)}  without a kitty tab={len(no_tab)}")
+real = [a for a in no_tab if a["session"] != "No Byobu"]
+print(f"   agents={len(agents)}  without a kitty tab={len(no_tab)}"
+      f" ({len(real)} of them inside a tmux session)")
 for a in agents:
-    mark = "OK " if a["tab_id"] else "!! "
+    if a["tab_id"]:
+        mark = "OK "
+    elif a["session"] == "No Byobu":
+        mark = "-- "   # outside tmux, so no tab by design
+    else:
+        mark = "!! "
     print(f"   {mark}{a['session']}: {strip(a['tab_title'])}")
+sys.exit(3 if real else 0)
 PY
 }
 
@@ -136,7 +169,8 @@ if [ "$MODE" = "--now" ]; then
   worst=0
   # Check each PATH once: a shared path can only be judged as a whole.
   for path in $(claimed_paths); do
-    check_path "$path" || worst=2
+    rc=0; check_path "$path" || rc=$?
+    [ "$rc" -eq 2 ] && worst=2
   done
   echo
   summary || worst=2
@@ -148,7 +182,7 @@ if [ "$MODE" = "--now" ]; then
   fi
   echo
   echo "== what bind p would show right now:"
-  end_to_end
+  end_to_end || worst=2
   exit $worst
 fi
 
@@ -174,7 +208,10 @@ snapshot() {
 before_state="$(snapshot)"
 before=" $(tsshd_pids | tr '\n' ' ') "
 echo "== tsshd alive now:${before}"
-echo "== waiting up to ${WAIT}s for a NEW connection or forward (reconnect from the Mac now) ..."
+echo "== waiting up to ${WAIT}s for a NEW connection or forward ..."
+# Order matters: start this FIRST, then reconnect on the Mac. A reconnect that already
+# happened leaves nothing to observe — the snapshot is taken here, not retroactively.
+echo "   (start this before reconnecting; if you already reconnected, use --now)"
 
 deadline=$(( $(date +%s) + WAIT ))
 newpid=""
