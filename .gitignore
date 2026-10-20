@@ -5,3 +5,11 @@ __pycache__/
 .pre-commit-cache/
 .tmp/
 .worktrees/
+
+# migrated env: never commit real keys or local-only state
+dotfiles/pi/models.json.local
+dotfiles/pi/web-search.json.local
+dotfiles/pi/auth.json
+dotfiles/pi/*token*
+dotfiles/**/secrets*
+*.local

@@ -33,6 +33,35 @@ link "$root/tmux.conf" "$HOME/.byobu/keybindings.tmux"
 link "$root/tmux.darwin.conf" "$HOME/.tmux.darwin.conf"
 link "$root/tmux.linux.conf" "$HOME/.tmux.linux.conf"
 
+df="$root/dotfiles"
+
+# byobu state-bar customization: module picker, colors
+for f in status color color.tmux; do
+  [ -f "$df/byobu/$f" ] && link "$df/byobu/$f" "$HOME/.byobu/$f"
+done
+
+# zsh: ~/.zshrc = pristine omz template + our 14-line pre-block spliced in before
+# `source $ZSH/oh-my-zsh.sh` (theme/plugins/instant-prompt must run before omz).
+# The template is never stored in the repo -- rebuilt from the installed omz.
+# All the rest of the user config lives in custom.zsh, sourced by omz automatically.
+zrc="$HOME/.zshrc"
+tpl="$HOME/.oh-my-zsh/templates/zshrc.zsh-template"
+if [ -f "$tpl" ]; then
+  backup "$zrc"
+  # splice: template up to the source line, then our pre-block, then the rest
+  awk -v pre="$df/zsh/zshrc.pre" '
+    /source \$ZSH\/oh-my-zsh\.sh/ && !done { while ((getline line < pre) > 0) print line; close(pre); done=1 }
+    { print }' "$tpl" > "/tmp/zshrc.pi-kitmux"
+  mv "/tmp/zshrc.pi-kitmux" "$zrc"
+  echo "Built $zrc from omz template + dotfiles/zsh/zshrc.pre"
+else
+  echo "!! oh-my-zsh not found, skipping ~/.zshrc build (run again after omz install)"
+fi
+# custom config: sourced automatically by omz from $ZSH_CUSTOM/*.zsh
+link "$df/zsh/custom.zsh" "$HOME/.oh-my-zsh/custom/pi-kitmux.zsh"
+# p10k: NOT stored. The wizard's choices are recorded in dotfiles/notes/
+# p10k-wizard-choices.txt; run `p10k configure` once on the new box.
+
 # Runtime helpers and the Pi extension
 link "$root/switch-pi-agent.py" "$HOME/.local/bin/switch-pi-agent.py"
 link "$root/tmux-title-tag.py" "$HOME/.local/bin/tmux-title-tag.py"

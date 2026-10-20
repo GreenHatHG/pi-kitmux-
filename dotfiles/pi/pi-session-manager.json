@@ -1,0 +1,6 @@
+{
+  "http_enabled": true,
+  "http_port": 52131,
+  "bind_addr": "0.0.0.0",
+  "auth_enabled": true
+}

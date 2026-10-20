@@ -1,0 +1,14 @@
+# pi-kitmux: this block is inserted into ~/.zshrc BEFORE `source $ZSH/oh-my-zsh.sh`
+# by deploy.sh. The rest of the omz template stays pristine.
+
+# Enable Powerlevel10k instant prompt. Should stay close to the top of ~/.zshrc.
+if [[ -r "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh" ]]; then
+  source "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh"
+fi
+
+# api keys (octopus / tavily / exa / firecrawl) live outside git; models.json
+# and web-search.json reference them as $OCTPUS_API_KEY etc.
+[ -f "$HOME/.config/pi-kitmux/secrets.env" ] && source "$HOME/.config/pi-kitmux/secrets.env"
+
+ZSH_THEME="powerlevel10k/powerlevel10k"
+plugins=(fzf-tab git fzf zsh-autosuggestions zsh-syntax-highlighting)

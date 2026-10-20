@@ -1,0 +1,40 @@
+{
+  "defaultTools": [
+    "read",
+    "bash",
+    "edit",
+    "write",
+    "grep"
+  ],
+  "lastChangelogVersion": "0.85.1",
+  "theme": "dark",
+  "tuiMode": "fullscreen",
+  "fullscreenExitOutput": "resume-hint",
+  "retry": {
+    "enabled": true,
+    "maxRetries": 4,
+    "baseDelayMs": 1000,
+    "maxAgentDelayMs": 30000,
+    "provider": {
+      "timeoutMs": 3600000,
+      "maxRetries": 0,
+      "maxRetryDelayMs": 30000
+    }
+  },
+  "showCacheMissNotices": false,
+  "defaultThinkingLevel": "high",
+  "hideThinkingBlock": true,
+  "defaultProvider": "octpus",
+  "defaultModel": "deepseek-v4-flash",
+  "packages": [
+    "npm:@oipsanthony/pi-command-history",
+    "npm:@diegopetrucci/pi-context-inspector",
+    "npm:@palmtom/pi-models",
+    "git:github.com/rays1d/pi-custom-header",
+    "../../projects/maplezzk-pi-extensions/packages/pi-metrics",
+    "../../projects/pi-extension-bash-guard",
+    "../../projects/pi-extension-tmux-subagent",
+    "../../projects/pi-extension-tool-token-est",
+    "../../projects/pi-watchdog"
+  ]
+}
