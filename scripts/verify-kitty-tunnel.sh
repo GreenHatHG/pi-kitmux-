@@ -153,32 +153,61 @@ if [ "$MODE" = "--now" ]; then
 fi
 
 # ---- wait mode: catch the connection that a reconnect creates ----
+# What counts as "a new connection" is deliberately not just a new PID: tsshd roams,
+# so a network drop plus reconnect often lands back in the SAME tsshd process with the
+# forward intact (observed: reconnect at 09:15 reused the tsshd from 09:15:38).
+# So we snapshot the whole picture — pids plus every forwarded path's identity — and
+# report as soon as any of it changes.
+snapshot() {
+  local pid inode path
+  for pid in $(tsshd_pids); do
+    echo "pid $pid"
+    inode=$(readlink "/proc/$pid/fd/1" 2>/dev/null | tr -dc '0-9')
+    [ -n "$inode" ] && echo "path $(path_of_inode "$inode") $inode"
+  done
+  # the file itself can be replaced while the listener set stays the same
+  for path in /tmp/mykitty-*; do
+    [ -e "$path" ] && stat -c 'file %n %i %Y' "$path" 2>/dev/null
+  done | sort -u
+}
+
+before_state="$(snapshot)"
 before=" $(tsshd_pids | tr '\n' ' ') "
 echo "== tsshd alive now:${before}"
-echo "== waiting up to ${WAIT}s for a NEW one (reconnect from the Mac now) ..."
+echo "== waiting up to ${WAIT}s for a NEW connection or forward (reconnect from the Mac now) ..."
 
 deadline=$(( $(date +%s) + WAIT ))
 newpid=""
 while [ "$(date +%s)" -lt "$deadline" ]; do
-  for pid in $(tsshd_pids); do
-    case "$before" in *" $pid "*) continue ;; esac
-    # A failed reconnect shows up briefly and dies again; require it to still exist.
-    [ -d "/proc/$pid" ] && { newpid="$pid"; break 2; }
-  done
+  if [ "$(snapshot)" != "$before_state" ]; then
+    # Prefer a brand new tsshd when there is one; otherwise the same process re-bound.
+    for pid in $(tsshd_pids); do
+      case "$before" in *" $pid "*) continue ;; esac
+      [ -d "/proc/$pid" ] && { newpid="$pid"; break; }
+    done
+    break
+  fi
   sleep 1
 done
 
-if [ -z "$newpid" ]; then
-  echo "!! no new tsshd after ${WAIT}s — did the reconnect happen?"
+if [ -z "$newpid" ] && [ "$(snapshot)" = "$before_state" ]; then
+  echo "!! nothing changed in ${WAIT}s — no new tsshd and no new forward"
   exit 1
 fi
 
 sleep 2   # give the reverse forward a moment to finish binding
-echo "== new connection:"
-inode=$(readlink "/proc/$newpid/fd/1" 2>/dev/null | tr -dc '0-9')
-path=$(path_of_inode "$inode")
+echo "== connection change detected:"
+if [ -n "$newpid" ]; then
+  echo "  new tsshd pid=$newpid"
+  inode=$(readlink "/proc/$newpid/fd/1" 2>/dev/null | tr -dc '0-9')
+  path=$(path_of_inode "$inode")
+else
+  # Same tsshd, so judge whatever paths it claims now.
+  echo "  same tsshd process(es), forward changed"
+  path=$(claimed_paths | tail -n 1)
+fi
 if [ -z "$path" ]; then
-  echo "  pid=$newpid  !! forwarded nothing we can find — the reverse forward failed"
+  echo "  !! forwarded nothing we can find — the reverse forward failed"
   exit 2
 fi
 
