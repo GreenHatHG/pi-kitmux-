@@ -16,9 +16,10 @@ Pi Coding Agent 的终端多路复用工具集：用 `fzf` 选择并跳转到运
 | `tmux.linux.conf` | Linux 专属配置。`bind v` 不再是 Mac 的 `open -a`，改调 `tmux-open-vscode.py`：先试 SSH RemoteForward 隧道（Mac 监听器收到路径后 `open` 一个 `vscode-remote://` 窗口），隧道不通则降级为 OSC 52 把 URL 写进 Mac 剪贴板；两种失败都向 stderr 说明具体原因 |
 | `tmux-open-vscode.py` | `bind v` 的 helper（VPS 侧）。双路线自动切换 + 失败原因可见：隧道拒绝/挂起/不通分别打印监听器回复、超时信息、RemoteForward 未连接提示 |
 | `scripts/vscode-open-listener.py` | Mac 侧监听器（launchd 常驻，127.0.0.1:19998）。收 VPS 经隧道发来的 `vscode-remote://ssh-remote+vps/...` URL，校验白名单前缀后交给 `open` 弹出 Remote 窗口；只 `open`，不执行任意命令 |
-| `scripts/tssh-vps.sh` | Mac 侧 `tssh vps` 的替代品（`deploy.sh` 软链到 `~/.local/bin/tssh-vps`）。kitty `listen_on` 的 socket 名一定含 PID（重启就变），静态 RemoteForward 会指向死 socket，wrapper 在进门前探活拿到活 socket 后 `exec tssh -R /tmp/mykitty-remote:<活 socket> vps`；socket 发现：`$KITTY_LISTEN_ON` 优先，`ls -t /tmp/mykitty-*` 逐个探活兑底；找不到时降级为无分组的 tssh，不阻塞。同一连接顺带转发 `-R 19998:127.0.0.1:19998`（`bind v` 的 VS Code 隧道，Mac 侧监听器见 `vscode-open-listener.py`；若 `~/.ssh/config` 里有重复的 RemoteForward 19998 行要删掉）。隧道随连接生灭，无需 autossh 与清理；VPS 侧零改动 |
+| `scripts/tssh-vps.sh` | Mac 侧 `tssh vps` 的替代品（`deploy.sh` 软链到 `~/.local/bin/tssh-vps`）。kitty `listen_on` 的 socket 名一定含 PID（重启就变），静态 RemoteForward 会指向死 socket，wrapper 在进门前探活拿到活 socket 后 `exec tssh -R /tmp/mykitty-remote-<pid>-<随机>:<活 socket> vps`；**每条连接用独占路径**——共用固定名时，后连上来的必须先把旧路径 unlink 才能绑，老连接的 listener 还挂在内核里却永远连不上，而最后一条断开时 OpenSSH 收回属于自己的文件，路径就彻底消失，picker 只剩「No Kitty Tab」；独占路径下重连到同一个 tsshd 还能找回自己那份文件；socket 发现：`$KITTY_LISTEN_ON` 优先，`ls -t /tmp/mykitty-*` 逐个探活兑底；找不到时降级为无分组的 tssh，不阻塞。同一连接顺带转发 `-R 19998:127.0.0.1:19998`（`bind v` 的 VS Code 隧道，Mac 侧监听器见 `vscode-open-listener.py`；若 `~/.ssh/config` 里有重复的 RemoteForward 19998 行要删掉）。隧道随连接生灭，无需 autossh 与清理；VPS 侧零改动 |
 | `scripts/com.pi-kitmux.vscode-open-listener.plist` | 上一条的 launchd 配置（KeepAlive + RunAtLoad），`deploy.sh` 在 macOS 上自动安装并加载 |
 | `scripts/check.sh` | 一键验证：pre-commit 静态检查（ruff / codespell / vulture / mypy / pyright / pylint）+ 单元测试 |
+| `scripts/verify-kitty-tunnel.sh` | 隧道体检。`--now` 检查当前每条 tsshd 连接：fd 1 取下 socket inode，到 `/proc/net/unix` 反查路径，再判断文件是否在、kitty 是否能应答、tab 标签能否解码；并比对「连接数 vs picker 能摸到的路径数」，少一个就说明有连接被共用路径遮住了。不带参数则等下一次连接（断线重连或新开），验完给出 PASS/FAIL。`tssh` 不认 `ExitOnForwardFailure`，转发失败只打 warning 照常进门，所以这个脚本是唯一能确认隧道真的通了的手段 |
 | `scripts/deploy.sh` | 部署：把 `tmux.conf` 软链到 `~/.tmux.conf` 与 `~/.byobu/keybindings.tmux`，平台配置软链到 `~/.tmux.darwin.conf` / `~/.tmux.linux.conf`，五个 tmux helper 软链到 `~/.local/bin/`，Pi 扩展软链到 `~/.pi/agent/extensions/`；macOS 上另装 VS Code 监听器的 launchd 服务。首次运行会把已存在的真实文件备份为 `*.bak.<时间戳>` |
 | `tests/` | Python helper 的单元测试 |
 
@@ -35,7 +36,10 @@ Pi Coding Agent 的终端多路复用工具集：用 `fzf` 选择并跳转到运
 
 安全细节：
 
-- kitty socket 自动发现（`KITTY_LISTEN_ON` > `/tmp/mykitty-*` 最新 > 默认探测），避免连死 socket 挂起
+- kitty socket 自动发现（`KITTY_LISTEN_ON` > `/tmp/mykitty-*` 最新 > 默认探测），避免连死 socket 挂起；候选先只收真 socket（`S_ISSOCK`），再对每个文件做一次 microsecond 级的 `connect` 探活，连不上就跳过——连接结束后会留下一个死文件，越积越多，而**活隧道往往是最老的那个**（长连接），所以任何「按个数/按 mtime 截断」都会把活隧道漏掉、又变回「No Kitty Tab」；真正区分死活的是能不能连上，不是新旧
+- 探活另有一个 5 秒的总预算（`_PROBE_BUDGET`），平时用不到（上面那道 connect 已经刷掉死文件），只防「连得上但不说协议」的怪 socket 把弹窗拖死
+- 判定「这条 socket 能用」要求 `kitty @ ls` 返回合法 JSON；以前只要 stdout 非空就当成功，会把只吐错误信息的死 socket 缓存下来，之后 `focus-tab` 全打空
+- **绝不删 socket 文件**：删掉一个 socket 文件会让它背后的隧道彻底失联，这正是要修的那个 bug；残留文件靠上面的 socket 过滤兜底
 - 所有外部命令带 3 秒超时，绝不阻塞
 - 自身进程（`switch-pi-agent`）会从匹配中排除
 

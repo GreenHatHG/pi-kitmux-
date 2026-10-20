@@ -2,6 +2,8 @@
 import json
 import os
 import re
+import socket
+import stat
 import subprocess
 import time
 import glob
@@ -25,16 +27,50 @@ _working_socket = None  # the kitty socket that worked; reuse it for focus-tab
 _title_conf = None  # (tab_title_template, tab_title_max_length), cached
 
 
+# Backstop seconds for the whole hunt. With the connect check below, usually only one
+# candidate ever reaches `kitty @`, so this is nearly never hit; it just stops a popup
+# from hanging if something exotic answers the TCP-level connect but never speaks.
+_PROBE_BUDGET = 5.0
+
+
+def _socket_accepts(path):
+    """Is anything actually listening behind this socket file?
+
+    Why this exists: one dead socket file is left behind per finished connection, and
+    they pile up endlessly. A dead file refuses the connect instantly, so this costs
+    microseconds — while handing it to `kitty @` costs a whole kitty start-up. Worse,
+    the live tunnel's file is usually the OLDEST (long-lived connection) and leftovers
+    are newer, so any cap or mtime-only ordering eventually hides the working tunnel.
+    A real connect is the one signal that separates live from leftover.
+    """
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+            probe.settimeout(0.5)
+            probe.connect(path)
+        return True
+    except OSError:
+        return False
+
+
 def _socket_candidates():
     cands = []
     env = os.environ.get("KITTY_LISTEN_ON")
     if env:
         cands.append(env)
-    # kitty turns listen_on unix:/tmp/mykitty into a real file /tmp/mykitty-<PID>
-    cands += [
-        "unix:" + s
-        for s in sorted(glob.glob("/tmp/mykitty-*"), key=os.path.getmtime, reverse=True)
-    ]
+    # kitty turns listen_on unix:/tmp/mykitty into a real file /tmp/mykitty-<PID>;
+    # the tunnel path is per-connection (/tmp/mykitty-remote-<pid>-<rand>).
+    # Keep only real sockets that something still listens on, live ones first, then by
+    # mtime (newest first) just to make the remaining order predictable.
+    found = []
+    for s in glob.glob("/tmp/mykitty-*"):
+        try:
+            st = os.stat(s)
+        except OSError:
+            continue  # file vanished between glob and stat
+        if stat.S_ISSOCK(st.st_mode):
+            found.append((st.st_mtime, s))
+    found.sort(reverse=True)
+    cands += ["unix:" + s for _, s in found if _socket_accepts(s)]
     # The empty candidate makes kitty @ probe its own TTY/env — that only works when
     # we run inside kitty itself. Inside a tmux popup the TTY is the pane, so the
     # probe can never succeed yet still costs ~2s per call; skip it there.
@@ -93,24 +129,49 @@ def render_tab_title(template, index, title, maxlen=0):
     return s
 
 
+def _run_kitty(sock, args):
+    """One kitty @ call against a specific socket; stderr is kept to diagnose failures."""
+    cmd = ["kitty", "@"] + ([f"--to={sock}"] if sock else []) + list(args)
+    try:
+        p = subprocess.run(cmd, text=True, capture_output=True, timeout=3, check=False)
+    except Exception:
+        return "", ""
+    return p.stdout, p.stderr
+
+
+def _looks_ok(args, out):
+    """Did this call really talk to kitty? A dead socket can still print noise on
+    stdout, and `if out:` used to cache that socket and send every later focus-tab
+    there. `ls` is the only JSON-returning call we probe with, so require valid JSON."""
+    if args and args[0] == "ls":
+        try:
+            return bool(json.loads(out))
+        except Exception:
+            return False
+    return bool(out.strip())
+
+
 def kitty_cmd(*args):
     """Run a kitty @ subcommand, finding a working socket (the result is cached)."""
     global _working_socket
     if _working_socket is not None:
-        return run(
-            ["kitty", "@"]
-            + ([f"--to={_working_socket}"] if _working_socket else [])
-            + list(args)
-        )
+        out, _ = _run_kitty(_working_socket, args)
+        return out
     tried = set()
+    deadline = time.monotonic() + _PROBE_BUDGET
     for sock in _socket_candidates():
         if sock in tried:
             continue
         tried.add(sock)
-        out = run(["kitty", "@"] + ([f"--to={sock}"] if sock else []) + list(args))
-        if out:
+        out, _ = _run_kitty(sock, args)
+        if _looks_ok(args, out):
             _working_socket = sock
             return out
+        # Never unlink a candidate here: removing a socket file kills the tunnel that
+        # owns it, which is the very bug this picker is recovering from. Stale files
+        # stay; the socket filter above keeps them from costing anything.
+        if time.monotonic() > deadline:
+            break
     _working_socket = ""
     return ""
 
