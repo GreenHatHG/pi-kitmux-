@@ -25,7 +25,7 @@
   "defaultThinkingLevel": "high",
   "hideThinkingBlock": true,
   "defaultProvider": "octpus",
-  "defaultModel": "deepseek-v4-flash",
+  "defaultModel": "glm-5.3-flash",
   "packages": [
     "npm:@oipsanthony/pi-command-history",
     "npm:@diegopetrucci/pi-context-inspector",
