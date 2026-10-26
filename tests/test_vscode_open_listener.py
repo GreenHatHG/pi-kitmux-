@@ -77,7 +77,9 @@ class HandleTest(unittest.TestCase):
         gate = threading.Event()
         self.addCleanup(gate.set)
         conn = FakeConn(_URL.encode())
-        with mock.patch.object(mod.subprocess, "run", side_effect=lambda *a, **k: gate.wait(10)):
+        with mock.patch.object(
+            mod.subprocess, "run", side_effect=lambda *a, **k: gate.wait(10)
+        ):
             worker = threading.Thread(target=mod.handle, args=(conn,))
             worker.start()
             deadline = time.monotonic() + 2
@@ -109,7 +111,9 @@ class ServeTest(unittest.TestCase):
 
         gate = threading.Event()
         self.addCleanup(gate.set)
-        with mock.patch.object(mod.subprocess, "run", side_effect=lambda *a, **k: gate.wait(10)):
+        with mock.patch.object(
+            mod.subprocess, "run", side_effect=lambda *a, **k: gate.wait(10)
+        ):
             threading.Thread(target=mod.serve, args=(srv,), daemon=True).start()
             first = self.send(port, _URL + "/a")  # this one blocks inside open
             second = self.send(port, _URL + "/b")

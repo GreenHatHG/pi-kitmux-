@@ -3,7 +3,15 @@
 
 export LANG=en_US.UTF-8
 
-. "$HOME/.local/bin/env"
+# ~/.local/bin holds our tmux helpers, plus whatever uv/bun dropped there. This used
+# to source "$HOME/.local/bin/env" -- a file the uv installer writes and git never
+# sees, so on a machine where uv came from brew it is just missing and every shell
+# start prints an error. Inlined so the config stands on its own. Same rule as that
+# file: prepend only when the dir is not already on PATH.
+case ":${PATH}:" in
+  *:"$HOME/.local/bin":*) ;;
+  *) export PATH="$HOME/.local/bin:$PATH" ;;
+esac
 # bun completions
 [ -s "$HOME/.bun/_bun" ] && source "$HOME/.bun/_bun"
 # bun
