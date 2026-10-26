@@ -65,6 +65,7 @@ link "$df/zsh/custom.zsh" "$HOME/.oh-my-zsh/custom/pi-kitmux.zsh"
 # Runtime helpers and the Pi extension
 link "$root/switch-pi-agent.py" "$HOME/.local/bin/switch-pi-agent.py"
 link "$root/tmux-title-tag.py" "$HOME/.local/bin/tmux-title-tag.py"
+link "$root/tmux-title-resync.py" "$HOME/.local/bin/tmux-title-resync.py"
 link "$root/tmux-pane-command.py" "$HOME/.local/bin/tmux-pane-command.py"
 link "$root/tmux-pane-repo.py" "$HOME/.local/bin/tmux-pane-repo.py"
 link "$root/tmux-pi-ack.py" "$HOME/.local/bin/tmux-pi-ack.py"
