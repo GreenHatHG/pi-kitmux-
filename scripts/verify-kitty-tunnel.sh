@@ -163,6 +163,30 @@ sys.exit(3 if real else 0)
 PY
 }
 
+# The VS Code chain: VPS socket -> tunnel -> Mac listener. Deliberately NOT part of the
+# exit status — a Mac without the launchd listener says nothing about the kitty tunnel,
+# and making every run fail for it would train you to ignore the report.
+check_vscode() {
+  local socks on_disk live out
+  socks=$(ls /tmp/vscode-open-remote-* 2>/dev/null || true)
+  if [ -z "$socks" ]; then
+    # Not a failure by itself: the old fixed-port forward still works
+    echo "   no per-connection socket (old fixed-port forward, or nothing forwarded)"
+  else
+    on_disk=$(printf '%s\n' "$socks" | wc -l)
+    live=0
+    for f in $socks; do
+      ss -xl 2>/dev/null | grep -q "[[:space:]]${f}[[:space:]]" && live=$((live + 1))
+    done
+    echo "   sockets on disk: ${on_disk}, with a live listener: ${live}"
+  fi
+  # The probe is the real answer: it walks exactly the paths the helper would use,
+  # legacy fixed port included. The URL is not whitelisted, so no window opens.
+  # No extra `!!` here: the helper already prefixes its own failure line.
+  out=$(python3 "$root/tmux-open-vscode.py" --probe 2>&1)
+  echo "   $out"
+}
+
 if [ "$MODE" = "--now" ]; then
   echo "== health of the connections alive right now:"
   [ -z "$(tsshd_pids)" ] && { echo "  no tsshd running"; exit 1; }
@@ -180,6 +204,9 @@ if [ "$MODE" = "--now" ]; then
     echo "== !! nothing matches /tmp/mykitty-* — the picker WILL show No Kitty Tab"
     worst=2
   fi
+  echo
+  echo "== bind v (VS Code opener, separate from the exit status):"
+  check_vscode
   echo
   echo "== what bind p would show right now:"
   end_to_end || worst=2
@@ -247,6 +274,13 @@ if [ -z "$path" ]; then
   echo "  !! forwarded nothing we can find — the reverse forward failed"
   exit 2
 fi
+
+echo
+# bind v is the other half of "after a reconnect, does everything still work?" —
+# the user-facing symptom is a VS Code window that never shows up
+echo "== bind v (VS Code opener, separate from the exit status):"
+check_vscode
+echo
 
 if check_path "$path"; then
   echo
