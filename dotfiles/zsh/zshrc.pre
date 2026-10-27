@@ -6,7 +6,7 @@ if [[ -r "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh" ]]
   source "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh"
 fi
 
-# api keys (octopus / tavily / exa / firecrawl) live outside git; models.json
+# api keys (octopus / tavily / firecrawl) live outside git; models.json
 # and web-search.json reference them as $OCTPUS_API_KEY etc.
 [ -f "$HOME/.config/pi-kitmux/secrets.env" ] && source "$HOME/.config/pi-kitmux/secrets.env"
 
