@@ -25,7 +25,7 @@
   "defaultThinkingLevel": "high",
   "hideThinkingBlock": true,
   "defaultProvider": "octpus",
-  "defaultModel": "glm-5.3-flash",
+  "defaultModel": "deepseek-v4.1-flash",
   "packages": [
     "npm:@oipsanthony/pi-command-history",
     "npm:@diegopetrucci/pi-context-inspector",
@@ -35,6 +35,7 @@
     "../../projects/pi-extension-bash-guard",
     "../../projects/pi-extension-tmux-subagent",
     "../../projects/pi-extension-tool-token-est",
-    "../../projects/pi-watchdog"
+    "../../projects/pi-watchdog",
+    "../../projects/pi-extension-goal-mode"
   ]
 }
