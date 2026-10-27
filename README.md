@@ -9,7 +9,7 @@ Pi Coding Agent 的终端多路复用工具集：用 `fzf` 选择并跳转到运
 | `tmux.conf` | tmux / Byobu 配置的唯一事实源，Mac 与 VPS 同一份。`scripts/deploy.sh` 把它同时软链到 `~/.tmux.conf`（原生 tmux 读取）与 `~/.byobu/keybindings.tmux`（Byobu 的 `profiles/tmuxrc` 第 35 行 source），保证两边配置一致。窗口栏显示「名称@位置」（如 `pi@main` / `pi@wt:5`），一眼区分主仓与各 worktree |
 | `tmux.darwin.conf` | macOS 专属配置（目前只有 `bind v` 用 `open -a` 打开 VS Code）。由 `tmux.conf` 末尾的 `if-shell` 在 Darwin 上 source，Linux 上不加载；跨平台差异集中在这一个小文件，主体配置两边永远相同 |
 | `switch-pi-agent.py` | 主脚本。扫描进程表找到所有运行中的 Pi Agent，定位其所在的 Kitty Tab / Byobu 窗格与工作目录，用 `fzf` 交互选择后跳转（按 Kitty Tab 分组展示；子行的 tmux 状态栏信息与底部 tab 栏逐格对齐；✅ 子行在名称后附完成时刻，头部显示本次弹窗的加载耗时） |
-| `kitty-tab-sync.ts` | Pi 扩展。综合 `agent_start` / `agent_settled`、阻塞式 UI prompt 与 watchdog 生命周期，用 pane 级 `@pi_running` / `@pi_done`（并记录完成时刻 `@pi_done_at`）作事实源，写逐窗口 `@pi_win`（tmux 窗口栏 ⏳ 运行中 / ✅ 已完成待关注）与会话级 `@pi_total`（kitty 标题 ⏳N ✅M）；跑完发 BEL 让 kitty 的 Dock 图标跳动 |
+| `kitty-tab-sync.ts` | Pi 扩展。综合 `agent_start` / `agent_settled`、阻塞式 UI prompt 与 watchdog 生命周期，用 pane 级 `@pi_running` / `@pi_done`（并记录完成时刻 `@pi_done_at`）作事实源，写逐窗口 `@pi_win`（tmux 窗口栏 ⏳ 运行中 / ✅ 已完成待关注）与会话级 `@pi_total`（kitty 标题 ⏳N ✅M）；每次状态变化 5 秒后用零宽 `@pi_nonce` 再推一次标题，兜住「断网正好卡在推送那一刻」；跑完发 BEL 让 kitty 的 Dock 图标跳动 |
 | `tmux-pane-command.py` | tmux 状态栏 helper。当 `pane_current_command` 只能看到沙盒 wrapper `enclave` 时，从前台 leader 的完整 `enclave run ...` 启动命令直接提取真实应用名 |
 | `tmux-pane-repo.py` | tmux 状态栏 helper。用 git 求出 pane 工作目录的 `<项目名>/<位置>`：主仓为 `main`，linked worktree 为 `wt:<worktree 名>`，非 git 目录输出空串。一次调用同时供 `@pi_repo` 与 `@pi_where`，也是 picker 侧同一事实源（`#()` 在 `list-panes` 里不执行，只能另调） |
 | `tmux-pi-ack.py` | tmux 状态栏 helper（`after-select-window` / `after-select-pane` hook，以及 `MouseDown1Status` 绑定调用）。切到或点中某个 window 时把该 window 的 ✅（done-unseen）清成已读，并立即重算 `@pi_win` / `@pi_total`；负责「看一眼即已读」的即时生效 |
@@ -18,10 +18,10 @@ Pi Coding Agent 的终端多路复用工具集：用 `fzf` 选择并跳转到运
 | `scripts/vscode-open-listener.py` | Mac 侧监听器（launchd 常驻，127.0.0.1:19998）。收 VPS 经隧道发来的 `vscode://vscode-remote/ssh-remote+vps/...` URL，校验白名单前缀后交给 `open` 弹出 Remote 窗口；只 `open`，不执行任意命令。**每连接一个线程 + 先回 `OK` 再 `open`**：`open` 冷启动要几秒，单线程时下一个人拿不到 ack，而 VPS 侧 helper 把沉默当死隧道。线程化之后 ack 只花一个 RTT，同时避开了「有人连上不发数据就把监听器卡死」（`recv` 也加了 10 秒超时）。`accept` 遇到 EMFILE 这类瞬时错误只退避不退出。**没做 URL 去重**：去重会误伤「同个项目开了两个 tab、10 秒内各按一次」，而重复弹窗只是外观问题 |
 | `scripts/tssh-vps.sh` | Mac 侧 `tssh vps` 的替代品（`deploy.sh` 软链到 `~/.local/bin/tssh-vps`）。kitty `listen_on` 的 socket 名一定含 PID（重启就变），静态 RemoteForward 会指向死 socket，wrapper 在进门前探活拿到活 socket 后 `exec tssh -R /tmp/mykitty-remote-<pid>-<随机>:<活 socket> vps`；**每条连接用独占路径**——共用固定名时，后连上来的必须先把旧路径 unlink 才能绑，老连接的 listener 还挂在内核里却永远连不上，而最后一条断开时 OpenSSH 收回属于自己的文件，路径就彻底消失，picker 只剩「No Kitty Tab」；独占路径下重连到同一个 tsshd 还能找回自己那份文件；socket 发现：`$KITTY_LISTEN_ON` 优先，`ls -t /tmp/mykitty-*` 逐个探活兑底；找不到时降级为无分组的 tssh，不阻塞。同一连接顺带转发 VS Code 隧道：**`-R /tmp/vscode-open-remote-<pid>-<随机>:127.0.0.1:19998`**，即 VPS 上的 unix socket 反代到 Mac 的监听器（`vscode-open-listener.py`）。这里以前是写死端口的 `-R 19998:127.0.0.1:19998`，而**端口是全局唯一资源**：谁先连上谁绑住，后来的全部 EADDRINUSE；tssh 不实现 `ExitOnForwardFailure`（0.1.27 源码里根本没这个选项），只打一行 warning 照常进门，于是**每个输家都以为自己有隧道**，赢家那条传输一断，任何 tab 按 `bind v` 都是往虚空里写。改成每连接独占路径后抢端口的死局消失。tssh 支持 `/remote_socket:host:port` 这个形状（`forward.go` 的 `parseForwardArg`，路径必须是绝对路径）；代价是 `~/.ssh/config` 里 `Host vps` 的旧 `RemoteForward 19998` 行必须删掉，否则端口又被拖回争抢。注意：独占路径只是让一条坏掉不连累其他，**roam 本身修不了**——tssh 只在登录时发一次转发请求，断网重连不会重建。隧道随连接生灭，无需 autossh 与清理；VPS 侧零改动 |
 | `scripts/com.pi-kitmux.vscode-open-listener.plist` | 上一条的 launchd 配置（KeepAlive + RunAtLoad），`deploy.sh` 在 macOS 上自动安装并加载 |
-| `scripts/check.sh` | 一键验证：pre-commit 静态检查（ruff / codespell / vulture / mypy / pyright / pylint）+ 单元测试 |
+| `scripts/check.sh` | 一键验证：pre-commit 静态检查（ruff / codespell / vulture / mypy / pyright / pylint）+ `tests/` 的 Python 单测 + `tests/test_title_resend.mjs` 的 node 行为测试 |
 | `scripts/verify-kitty-tunnel.sh` | 隧道体检。`--now` 检查当前每条 tsshd 连接：fd 1 取下 socket inode，到 `/proc/net/unix` 反查路径，再判断文件是否在、kitty 是否能应答、tab 标签能否解码；并比对「连接数 vs picker 能摸到的路径数」，少一个就说明有连接被共用路径遮住了。顺带体检 `bind v` 那条：统计 `/tmp/vscode-open-remote-*` 数量和活监听器，再调 helper 的 `--probe` 走一遍完整链路——这一项**故意不计入退出码**，Mac 上没装监听器跟 kitty 隧道坏没坏是两回事，否则每次都 FAIL 会让人学会忽略报告。不带参数则等下一次连接（断线重连或新开），验完给出 PASS/FAIL。`tssh` 不认 `ExitOnForwardFailure`，转发失败只打 warning 照常进门，所以这个脚本是唯一能确认隧道真的通了的手段 |
 | `scripts/deploy.sh` | 部署：把 `tmux.conf` 软链到 `~/.tmux.conf` 与 `~/.byobu/keybindings.tmux`，平台配置软链到 `~/.tmux.darwin.conf` / `~/.tmux.linux.conf`，五个 tmux helper 软链到 `~/.local/bin/`，Pi 扩展软链到 `~/.pi/agent/extensions/`；macOS 上另装 VS Code 监听器的 launchd 服务。首次运行会把已存在的真实文件备份为 `*.bak.<时间戳>` |
-| `tests/` | Python helper 的单元测试（含 Mac 侧监听器：白名单、NUL、ack 先于 `open`、慢 `open` 不阻塞下一个连接） |
+| `tests/` | Python helper 的单元测试（含 Mac 侧监听器：白名单、NUL、ack 先于 `open`、慢 `open` 不阻塞下一个连接），外加 `test_tmux_conf.py`（钉住 `set-titles-string` 里的零宽 nonce 契约）与 `test_title_resend.mjs`（node 测试：起临时 tmux server 挂 pty，数真实推出去的标题 OSC，验补推行为） |
 
 ## 工作原理
 
@@ -76,6 +76,7 @@ Pi Coding Agent 的终端多路复用工具集：用 `fzf` 选择并跳转到运
 - pane 级 `@pi_running` / `@pi_done` / `@pi_done_at` 是事实源（pane 销毁自动清除，不残留）：`@pi_running` 表示本 pane 仍在处理；`@pi_done` 表示上一轮已真正跑完且**尚未被看过**；`@pi_done_at` 是置 `@pi_done` 时的 epoch 秒，与 `@pi_done` 同生同灭，供 picker 在 ✅ 后显示完成时刻
 - 窗口级 `@pi_win`：tmux/byobu 窗口栏每格显示三态——有 pane 在跑为 `⏳`（优先于 ✅）、有 pane 跑完待关注为 `✅`、否则为空（均不带数字）；`✅` 会在该 pane 下一轮运行、出现阻塞式 prompt、切换 session（`/new` / `/resume` / `/fork`）、进程退出，或**切到 / 点中该 window（ack，见 `tmux-pi-ack.py`）**时清除
 - 会话级 `@pi_total`：本 session 计数 `⏳N ✅M`（N=运行中、M=已完成待关注；为 0 的部分省略，全 0 则整段不显示），供 kitty tab 标题（`set-titles-string`）；放 session 级，新开的 tmux 窗口也能立即显示
+- 标题补发：tmux 只在**渲染出的字符串变化**时推 OSC，推过就记进 client 缓存。断网正好卡在推的那一瞬，OSC 丢了而缓存已是新值，重连后 tmux 认为「没变化」，kitty 的 tab 永远停在旧状态。所以每次状态变化后再推一次：`set-titles-string` 末尾挂一个 session 级 `@pi_nonce`（一个零宽字符，tab 上不可见、picker 解 tag 时被忽略），5 秒后翻成另一个——字符串变了，tmux 必须重推。网络正常时这是一次多余的重复；断网时这一份会落进 tsshd 的断线缓存（它 3 秒收不到心跳后改把 PTY 输出存内存，上限 1000 行，重连时一起 flush），于是跟着重连补出来。不用轮询、空闲零流量、状态不变就一个字节都不发
 - 与 `pi-extension-watchdog` 通过 `pi.events` 同步生命周期：watchdog 的 `running` 只表示它自己处于监控/armed 状态（空会话自启动时也会为真），因此仅在**本进程已跑过至少一轮**后，才用它作为「单轮 `agent_settled` 后仍会续跑」的抑制项继续保持 ⏳；否则空会话会误亮。用户按 `Esc` 中止一轮时 watchdog 会广播 `interrupted: true`（此时 `running` 仍为真）：表示本次空闲不会再续跑，故立即清掉 ⏳，且不置 ✅——这一轮并非「真正跑完」；等用户发下一条真实消息、watchdog 清回 `interrupted: false` 后恢复正常。只有 watchdog 停止/挂起且当前 agent 已结束时才置 ✅
 - 阻塞式 UI prompt（如 plan 评审）期间临时视为等待用户，不显示运行中；prompt 结束后按 agent/watchdog 真值恢复
 - 跑完发 BEL（`\a`）：kitty 的 `window_alert_on_bell`（默认 `yes`）收到 BEL 会让 Dock 图标跳动，这是 kitty 切到后台时唯一看得见的完成提醒（tmux 窗口栏 `✅`、kitty 标题 `✅M` 在后台都看不到）。tmux 默认会把 pane 的 BEL 转发给外层终端，与该 window 是否为当前窗口无关；BEL 只在真正跑完时发（Esc 打断、退出、`session_start` 校正、弹窗暂停都不发）。kitty 的 `🔔` tab 徽标（`bell_on_tab`）走 `tab_title_template` 的 `{bell_symbol}`，是另一回事
@@ -120,4 +121,10 @@ tmux source-file ~/.tmux.conf
 ```bash
 uv sync --dev          # 安装 dev 依赖
 ./scripts/check.sh     # 静态检查 + 测试
+```
+
+`scripts/check.sh` 跑三样：pre-commit 静态检查、`tests/` 下的 Python 单测、以及 `tests/test_title_resend.mjs`（node 测试）。最后一组是唯一能验到 `kitty-tab-sync.ts` 行为的手段：它起一个用完就丢的 tmux server、挂一个 pty 客户端，直接数 tmux 推出去的标题 OSC，断言「状态变化后 5 秒有一次补推、可见文字不变、空闲零推送、退出时补推、连续变化只补一次」。单独跑：
+
+```bash
+node --experimental-strip-types --test tests/test_title_resend.mjs
 ```

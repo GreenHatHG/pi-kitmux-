@@ -9,15 +9,23 @@ connection and lost — while the cache already holds the new value. After
 the reconnect tmux considers the title "unchanged" and never sends it
 again: the Mac kitty tab stays stuck on a stale ⏳.
 
-The signal we CAN see from this machine: tssh-vps.sh forwards kitty's
-socket to a unique /tmp/mykitty-remote-* path per connection, and a roam
-re-connecting into the same tsshd re-binds that file (new inode — proven
-by the 260ee47 fix). So: watch the inodes of those socket files; when the
-set changes, a (re)connect happened — force a title resend by toggling
-each session's @pi_total off and on again. The two writes must be separate
+The signal this script watches: tssh-vps.sh forwards kitty's socket to a
+unique /tmp/mykitty-remote-* path per connection, and a NEW login binds a
+new one — so watching the inodes of those files catches a reconnect that
+opened a fresh connection, and forces a title resend by toggling each
+session's @pi_total off and on again. The two writes must be separate
 tmux invocations: commands queued in one batch all run before the redraw,
 so the intermediate state would never render and the cache would never
 miss. Separate invocations = separate redraws = a guaranteed cache miss.
+
+What this script CANNOT see: a roam back into the same tsshd. That is the
+common case — the tssh client reconnects the transport without logging in
+again, so the tsshd process, the session and its forwarded socket file all
+stay exactly as they were. No file changes, no event, silence. Roam is
+covered instead by kitty-tab-sync.ts, which pushes every title twice (the
+@pi_nonce flip), so the copy sent after the drop is buffered by tsshd and
+replayed on reconnect. This watcher remains as the faster path for the
+new-login case only.
 
 Launch: from tmux.conf via run-shell. tmux passes its TMUX env to run-shell
 children, so every `tmux` call below talks to the SAME server that spawned
@@ -40,8 +48,8 @@ import sys
 import time
 from collections.abc import Sequence
 
-# Socket files live in /tmp and the roam re-bind is instant; one second is
-# plenty and keeps the watcher cheap.
+# Socket files live in /tmp and a new login binds one immediately; one second
+# is plenty and keeps the watcher cheap.
 TICK = 1.0
 # tssh-vps.sh appends a unique suffix per connection under this prefix.
 FWD_PREFIX = "/tmp/mykitty-remote"
@@ -71,6 +79,7 @@ def server_alive() -> bool:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=5,
+            check=False,
         ).returncode
         == 0
     )
@@ -103,13 +112,13 @@ def socket_inodes() -> dict[str, tuple[int, int]]:
 def already_running() -> bool:
     """True when another copy of this script holds a live pid."""
     try:
-        with open(PIDFILE) as f:
-            pid = int(f.read().strip())
+        with open(PIDFILE, encoding="utf-8") as pid_file:
+            pid = int(pid_file.read().strip())
     except (OSError, ValueError):
         return False
     try:
-        with open(f"/proc/{pid}/cmdline", "rb") as f:
-            cmdline = f.read().decode(errors="replace")
+        with open(f"/proc/{pid}/cmdline", "rb") as cmdline_file:
+            cmdline = cmdline_file.read().decode(errors="replace")
     except OSError:
         # Dead pid or a recycled one running something else: not us
         return False
@@ -120,8 +129,8 @@ def claim() -> bool:
     """Take the pidfile; False means another watcher is already serving."""
     if already_running():
         return False
-    with open(PIDFILE, "w") as f:
-        f.write(str(os.getpid()))
+    with open(PIDFILE, "w", encoding="utf-8") as pid_file:
+        pid_file.write(str(os.getpid()))
     return True
 
 
@@ -173,8 +182,8 @@ if __name__ == "__main__":
         # Best effort: drop the pidfile so the next start is not blocked
         # by our own (now stale) entry
         try:
-            with open(PIDFILE) as f:
-                if f.read().strip() == str(os.getpid()):
+            with open(PIDFILE, encoding="utf-8") as own_pid_file:
+                if own_pid_file.read().strip() == str(os.getpid()):
                     os.unlink(PIDFILE)
         except OSError:
             pass

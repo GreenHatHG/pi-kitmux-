@@ -27,17 +27,45 @@ import * as path from "node:path";
 // Known edge cases (SIGKILL / move-pane across sessions) can skew counts for a while, but
 // the next event recomputes and heals them.
 //
+// One more session-level option exists only for delivery, not for state: @pi_nonce, the
+// zero-width char tmux.conf appends to set-titles-string. tmux pushes a title only when the
+// rendered string changes, so flipping this forces a repeat push without changing what the
+// tab shows. See RESEND_DELAY_MS for why a repeat push is needed at all.
+//
 // Every tmux write goes through StatusSink: locally TmuxStatusSink does it with the CLI.
 // If pi ever runs on a remote box (VPS), just swap in another sink (e.g. send events over
 // an SSH reverse socket); the status logic stays the same. Reads (display-message /
 // list-panes) are still local-tmux only for now.
 type WindowStatus = "running" | "done" | "idle";
 
+// The two zero-width chars @pi_nonce alternates between. They sit after the tag's end
+// marker, so the picker's decoder ignores them, and they render as nothing.
+const NONCE_A = "\u200b";
+const NONCE_B = "\u200c";
+
+// How long after a status change the title is pushed a second time. tmux pushes a title
+// only when the rendered string differs, then caches it. If the network drops right on
+// that push, the OSC is lost while the cache already holds the new value, and tmux stays
+// silent after the reconnect: the kitty tab is stuck on the old status for good.
+//
+// tsshd gives us a way out without polling anything: after 3s with no client heartbeat it
+// stops writing to the dead transport and buffers the PTY output in memory (1000 lines),
+// then flushes it when the client comes back. So a push that lands during the outage is not
+// lost — it waits and is delivered on reconnect. Hence: push again a few seconds later.
+// Network up: one redundant repetition, harmless. Network down: this copy is the one that
+// survives. No timer loop, no traffic while idle, nothing when the status never changes.
+// The env override exists for tests/test_title_resend.mjs, which cannot afford 5s per case;
+// production never sets it. Anything under half a second is not a usable delay — it would push
+// right back inside the window where a drop loses the title — so treat it as unset.
+const resendOverride = Number(process.env.PI_TITLE_RESEND_MS);
+const RESEND_DELAY_MS = resendOverride >= 500 ? resendOverride : 5000;
+
 interface StatusSink {
   setPaneRunning(on: boolean): void;
   setPaneDone(on: boolean): void;
   setWindowStatus(windowId: string, status: WindowStatus): void;
   setSessionTotal(sessionId: string, text: string): void;
+  flipTitleNonce(sessionId: string): void;
   clearLegacy(): void;
   refresh(): void;
 }
@@ -84,6 +112,26 @@ class TmuxStatusSink implements StatusSink {
     this.cmd(["set", "-t", sessionId, "@pi_total", text]);
   }
 
+  // The title-resend lever tmux.conf puts at the end of set-titles-string: two
+  // zero-width chars, invisible in the tab. Flip it and the rendered title string
+  // differs, so tmux must push it again even when the status itself did not change.
+  // Read the current value instead of keeping it in memory: several panes of one
+  // session each run their own copy of this extension, and a memory copy would
+  // make them flip to the value already set (no change, no resend).
+  flipTitleNonce(sessionId: string): void {
+    const current = this.readSessionOption(sessionId, "@pi_nonce");
+    this.cmd(["set", "-q", "-t", sessionId, "@pi_nonce", current === NONCE_A ? NONCE_B : NONCE_A]);
+  }
+
+  private readSessionOption(sessionId: string, option: string): string {
+    try {
+      return execFileSync(
+        "tmux", ["show-options", "-qv", "-t", sessionId, option],
+        { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }
+      ).trim();
+    } catch { return ""; }
+  }
+
   // Defensive cleanup: drop the old window-level @pi_status / @pi_done defaults.
   // Note: this clears the *window-level* leftover @pi_done; the @pi_done this
   // extension uses now is pane-level (set -pq), a different namespace, so don't
@@ -125,6 +173,28 @@ let quitting = false;
 // State fix-up during session_start: a leftover pane @pi_running being cleared is not a
 // finish, so suppress a false ✅.
 let suppressDone = false;
+
+// Set when the +5s resend is pending. One timer per process: a burst of status events
+// must not push the resend further out, or a busy pane would never resend at all.
+let resendTimer: ReturnType<typeof setTimeout> | null = null;
+
+// The signal handlers run cleanupOnExit and then call process.exit, which fires the exit
+// handler and would run it a second time: a duplicate final title push and an extra nonce
+// flip that lands back on the original value. Once is enough.
+let cleanupDone = false;
+
+// Ask for one more title push in a few seconds. The flip is what makes tmux resend; the
+// status itself usually does not change again, and a repeat of an identical string would
+// hit the cache and do nothing.
+function scheduleTitleResend(sessionId: string) {
+  if (resendTimer) return;
+  resendTimer = setTimeout(() => {
+    resendTimer = null;
+    sink.flipTitleNonce(sessionId);
+  }, RESEND_DELAY_MS);
+  // Do not hold pi's exit for up to 5s; cleanupOnExit does the exit-time push itself.
+  resendTimer.unref?.();
+}
 
 function getSessionId(): string | null {
   try {
@@ -202,6 +272,7 @@ function broadcastStatus() {
       sink.setWindowStatus(windowId, status);
     }
     sink.refresh();
+    scheduleTitleResend(sessionId);
   } catch {}
 }
 
@@ -245,6 +316,8 @@ function applyEffectiveState() {
 }
 
 function cleanupOnExit() {
+  if (cleanupDone) return;
+  cleanupDone = true;
   quitting = true;
   agentRunning = false;
   watchdogActive = false;
@@ -262,6 +335,14 @@ function cleanupOnExit() {
     sink.setPaneDone(false);
     broadcastStatus();
   }
+  // Leaving is itself a title change (⏳ → nothing) and the process dies now, so the
+  // scheduled +5s resend would never fire. Push that copy here, synchronously.
+  if (resendTimer) {
+    clearTimeout(resendTimer);
+    resendTimer = null;
+  }
+  const sessionId = process.env.TMUX && process.env.TMUX_PANE ? getSessionId() : null;
+  if (sessionId) sink.flipTitleNonce(sessionId);
 }
 
 export default function (pi: ExtensionAPI) {

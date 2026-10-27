@@ -454,6 +454,23 @@ class DecodeTitleTagTest(TestCase):
     def test_plain_title_has_no_tag(self) -> None:
         self.assertEqual(switch_pi_agent.decode_title_tag("⏳3 repo"), "")
 
+    def test_resend_nonce_after_end_marker_stays_invisible(self) -> None:
+        # tmux.conf appends @pi_nonce behind the end marker and kitty-tab-sync.ts flips
+        # it to force a second title push. If the picker ever stopped decoding a tagged
+        # title because of that trailing char, bind p would show No Kitty Tab for every
+        # session — so pin it: both flip positions decode, and neither shows on screen.
+        tag_mod = self._spec()
+        for nonce in ("\u200b", "\u200c"):
+            title = "✅1 pi-kitmux" + tag_mod.encode_tag("vps-host:win-6") + nonce
+            self.assertEqual(switch_pi_agent.decode_title_tag(title), "vps-host:win-6")
+            visible = (
+                title.replace(tag_mod.Z0, "")
+                .replace(tag_mod.Z1, "")
+                .replace(tag_mod.START, "")
+                .replace(tag_mod.END, "")
+            )
+            self.assertEqual(visible, "✅1 pi-kitmux")
+
     def test_broken_frames_are_rejected(self) -> None:
         self._spec()
         # No end marker / no start marker / odd bit count / foreign chars in the frame
