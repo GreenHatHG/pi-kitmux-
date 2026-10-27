@@ -17,10 +17,43 @@ esac
 # bun
 export BUN_INSTALL="$HOME/.bun"
 export PATH="$BUN_INSTALL/bin:$PATH"
+# 一个 tab 一个 tmux 会话，身份不能挂在 pty 编号上：tab 一关，/dev/pts/N 立刻回到
+# 内核的空闲池，新 tab 大概率捡到同一个号，而 tmux 会话能活好几天 —— 新 tab 跑 spi
+# 就钻进了几天前的旧会话。改用终端自己的 session id（session leader 的 pid）：
+# tssh roam / mosh 重连后 shell 没变，sid 不变；换一个 tab 一定是新的 sid。
+# KITTY_WINDOW_ID 不能当身份：sshd 的 AcceptEnv 不收它，出了本机就没值。
+_kitty_tab_id() {
+  local id
+  for kw in sid sess; do
+    id=$(ps -o "$kw=" -p $$ 2>/dev/null | tr -d ' ')
+    [[ -n "$id" && "$id" != 0 ]] && print -r -- "$id" && return
+  done
+  print -r -- "pid-$$"
+}
+
+# 打印本 tab 该用的会话名；还没有就现在建好，并把身份打在会话的 @pi_term 上
+# tmux 的 -t 一律写成 "=名:"：= 开头才算精确匹配，否则 win-1 会前缀撞上 win-13
+_kitty_tab_session() {
+  local id=$(_kitty_tab_id) line name base n=1
+  for line in ${(f)"$(tmux list-sessions -F '#{session_name}:#{@pi_term}' 2>/dev/null)"}; do
+    [[ "${line#*:}" == "$id" ]] && print -r -- "${line%%:*}" && return
+  done
+  base="win-${TTY##*/}"
+  [[ "$base" == win- ]] && base="win-$$"
+  name=$base
+  # 旧终端留下的同名会话（pty 号被它继承过）还没死，就往后排一个号
+  while tmux has-session -t "=$name:" 2>/dev/null; do
+    (( n++ ))
+    name="$base-$n"
+  done
+  # 用 byobu 建（不是裸 tmux），新起来的是 byobu 配置好的 server；它的输出一律吞掉，
+  # 不然会混进本函数的返回值里
+  byobu new-session -A -s "$name" -d >/dev/null 2>&1
+  tmux set -t "=$name:" @pi_term "$id" 2>/dev/null
+  print -r -- "$name"
+}
 bb() {
-  # KITTY_WINDOW_ID 过不了 mosh/ssh，退回用 TTY 名当唯一标识
-  local session_name="${1:-win-${KITTY_WINDOW_ID:-${TTY##*/}}}"
-  byobu new-session -A -s "$session_name"
+  byobu new-session -A -s "${1:-$(_kitty_tab_session)}"
 }
 spi() {
     local dirs=()
@@ -40,8 +73,6 @@ spi() {
             passthru+=("$arg")
         fi
     done
-    # KITTY_WINDOW_ID 过不了 mosh/ssh，退回用 TTY 名当唯一标识（mosh 重连后 pty 不变，名字稳定）
-    local session_name="win-${KITTY_WINDOW_ID:-${TTY##*/}}"
     local spa="$HOME/.pi/agent/instructions/main"
     for f in ${~spa}/*.md(N); do
         appends+=(--append-system-prompt "$f")
@@ -50,17 +81,16 @@ spi() {
     if [ -n "$BYOBU_BACKEND" ] || [ -n "$TMUX" ]; then
         eval "$cmd"
     else
-        # 先在后台把 session 建好，别急着 attach
-        byobu new-session -A -s "$session_name" -d
+        # 只有这里会碰会话：进 tmux 之前算名字，_kitty_tab_session 顺手把会话建好
+        local session_name=$(_kitty_tab_session)
         # 等 tmux server 真正就绪，最多 5 秒，不然 send-keys 会静默丢命令
         local i=0
-        until tmux has-session -t "$session_name" 2>/dev/null; do
+        until tmux has-session -t "=$session_name:" 2>/dev/null; do
             sleep 0.1
             (( i++ > 50 )) && break
         done
-        # 显式指定目标，防止命令打到别的 session
-        tmux send-keys -t "$session_name" "$cmd" C-m
-        byobu attach -t "$session_name" || byobu select-session -t "$session_name"
+        tmux send-keys -t "=$session_name:" "$cmd" C-m
+        byobu attach -t "=$session_name:" || byobu select-session -t "$session_name"
     fi
 }
 # To customize prompt, run `p10k configure` or edit ~/.p10k.zsh.
