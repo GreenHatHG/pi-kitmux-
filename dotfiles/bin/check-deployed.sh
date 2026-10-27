@@ -24,5 +24,10 @@ for f in "$HOME"/.pi/agent/instructions/main/*.md \
          "$HOME"/.byobu/status "$HOME"/.byobu/color "$HOME"/.byobu/color.tmux; do
   [ -e "$f" ] && check "$f"
 done
+# Only the repo's own skills -- ~/.agents/skills also holds hand-installed ones,
+# which are real directories, not symlinks, and would show up as false BROKENs
+for d in "$root"/skills/*/; do
+  check "$HOME/.agents/skills/$(basename "${d%/}")"
+done
 [ "$fail" = 0 ] && echo "all links ok"
 exit $fail

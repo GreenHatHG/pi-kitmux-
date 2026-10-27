@@ -24,6 +24,16 @@ link() {
   echo "Linked $dst -> $src"
 }
 
+# Same, but no chmod -- link() sets +x (helpers need it), config files must keep
+# their mode or git records a spurious mode change on every deploy
+symlink() {
+  local src="$1" dst="$2"
+  mkdir -p "$(dirname "$dst")"
+  backup "$dst"
+  ln -sfn "$src" "$dst"
+  echo "Linked $dst -> $src"
+}
+
 # tmux / Byobu config: the repo root tmux.conf is the one source of truth
 # - native tmux reads ~/.tmux.conf on start
 # - Byobu sources ~/.byobu/keybindings.tmux from profiles/tmuxrc line 35
@@ -71,6 +81,16 @@ link "$root/tmux-pane-repo.py" "$HOME/.local/bin/tmux-pane-repo.py"
 link "$root/tmux-pi-ack.py" "$HOME/.local/bin/tmux-pi-ack.py"
 link "$root/tmux-open-vscode.py" "$HOME/.local/bin/tmux-open-vscode.py"
 link "$root/kitty-tab-sync.ts" "$HOME/.pi/agent/extensions/kitty-tab-sync.ts"
+
+# Pi agent config: instructions are read from ~/.pi/agent/instructions/main/, skills
+# from ~/.pi/agent/skills/ or ~/.agents/skills/ (the latter is shared with other
+# harnesses, so a skill synced here also shows up for Claude Code)
+for f in "$df"/instructions/*.md; do
+  symlink "$f" "$HOME/.pi/agent/instructions/main/$(basename "$f")"
+done
+for d in "$df"/skills/*/; do
+  symlink "${d%/}" "$HOME/.agents/skills/$(basename "${d%/}")"
+done
 
 # macOS only: tssh wrapper that resolves the live kitty remote-control socket
 # (its name always embeds kitty's PID, so it changes per kitty restart) and
