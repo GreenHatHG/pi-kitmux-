@@ -91,6 +91,12 @@ done
 for d in "$df"/skills/*/; do
   symlink "${d%/}" "$HOME/.agents/skills/$(basename "${d%/}")"
 done
+# pi's own json config. pi writes these with temp-file + rename, which turns the symlink
+# into a plain file and quietly stops repo edits from landing -- rerun deploy.sh to heal
+# (backup() moves the drifted file aside first).
+for f in settings models web-search subagent_advisor; do
+  [ -f "$df/pi/$f.json" ] && symlink "$df/pi/$f.json" "$HOME/.pi/agent/$f.json"
+done
 
 # macOS only: tssh wrapper that resolves the live kitty remote-control socket
 # (its name always embeds kitty's PID, so it changes per kitty restart) and

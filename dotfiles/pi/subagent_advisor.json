@@ -1,7 +1,7 @@
 {
   "advisor": {
     "model": "octpus/kimi-k3:max",
-    "enabled": true,
+    "enabled": false,
     "vccCli": "bun $HOME/projects/pi-vcc/cli/main.ts"
   }
 }
