@@ -2,7 +2,7 @@
 # Rebuild this environment on a fresh Debian from GitHub + this repo.
 #   1. install git + zsh, clone pi-kitmux (ssh key or https+token first)
 #   2. run THIS script
-# Secrets (ssh key, OCTPUS/TAVILY/FIRECRAWL api keys) are NOT in git --
+# Secrets (ssh key, OCTPUS/TAVILY/EXA/FIRECRAWL api keys) are NOT in git --
 # transfer them once by hand, or re-issue them.
 set -uo pipefail
 
@@ -62,6 +62,7 @@ if step deploy; then
 # NOTE: keep the 'export' prefix -- without it pi can't see the vars
 export OCTPUS_API_KEY=
 export TAVILY_API_KEY=
+export EXA_API_KEY=
 export FIRECRAWL_API_KEY=
 EOF
   chmod 600 ~/.config/pi-kitmux/secrets.env
@@ -124,7 +125,7 @@ cat <<'EOF'
 
 Manual leftovers (not in git, by design):
 - ~/.ssh keys: fresh keypair is cleaner (add pub key to GitHub); or scp the old one
-- API keys: fill ~/.config/pi-kitmux/secrets.env (octopus / tavily / firecrawl)
+- API keys: fill ~/.config/pi-kitmux/secrets.env (octopus / tavily / exa / firecrawl)
 - maplezzk-pi-extensions (pi-metrics): still has no git remote -- push it to a
   private repo, or rsync it from the old box before decommissioning
 - p10k: run `p10k configure` once; choices are in dotfiles/notes/p10k-wizard-choices.txt

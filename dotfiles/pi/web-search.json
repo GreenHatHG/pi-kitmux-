@@ -10,6 +10,7 @@
     ]
   },
   "tavilyApiKey": "$TAVILY_API_KEY",
+  "exaApiKey": "$EXA_API_KEY",
   "firecrawlApiKey": "$FIRECRAWL_API_KEY",
   "firecrawlBaseUrl": "https://api.firecrawl.dev",
   "ssrf": {
