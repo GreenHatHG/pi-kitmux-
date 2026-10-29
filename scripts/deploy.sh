@@ -82,14 +82,13 @@ link "$root/tmux-pi-ack.py" "$HOME/.local/bin/tmux-pi-ack.py"
 link "$root/tmux-open-vscode.py" "$HOME/.local/bin/tmux-open-vscode.py"
 link "$root/kitty-tab-sync.ts" "$HOME/.pi/agent/extensions/kitty-tab-sync.ts"
 
-# Pi agent config: instructions are read from ~/.pi/agent/instructions/main/, skills
-# from ~/.pi/agent/skills/ or ~/.agents/skills/ (the latter is shared with other
-# harnesses, so a skill synced here also shows up for Claude Code)
+# Pi agent config: instructions are read from ~/.pi/agent/instructions/main/, prompt
+# templates from ~/.pi/agent/prompts/
 for f in "$df"/instructions/*.md; do
   symlink "$f" "$HOME/.pi/agent/instructions/main/$(basename "$f")"
 done
-for d in "$df"/skills/*/; do
-  symlink "${d%/}" "$HOME/.agents/skills/$(basename "${d%/}")"
+for f in "$df"/prompts/*.md; do
+  [ -f "$f" ] && symlink "$f" "$HOME/.pi/agent/prompts/$(basename "$f")"
 done
 # pi's own json config. pi writes these with temp-file + rename, which turns the symlink
 # into a plain file and quietly stops repo edits from landing -- rerun deploy.sh to heal
