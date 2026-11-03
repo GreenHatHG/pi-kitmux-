@@ -51,7 +51,7 @@
 
 ## `qmdr` CLI Reference
 - Read-only queries: `qmdr query "<question>" -c <collection>` (Baseline filter: `--min-score 0.4`).
-- Read documents: Always use `multi-get` (there is NO `qmdr get`). Format: `qmdr multi-get "qmd://<collection>/<path> -l 300"`.
+- Read documents: Always use `multi-get` (there is NO `qmdr get`). Format: `qmdr multi-get "qmd://<collection>/<path>" -l 300`. Keep `-l` OUTSIDE the quotes — anything inside the quotes is treated as part of the file pattern.
 - Zero-flag commands: `status`, `ls <collection>`, and `collection list` accept NO flags.
 - Help: Check `qmdr -h` first; use `qmdr --help` only if needed.
 

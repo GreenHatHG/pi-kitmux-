@@ -1,5 +1,5 @@
 ---
-description: Save key decisions, mistakes, and fixes into simple notes for the next AI. 
+description: Save key decisions, mistakes, and fixes into simple notes for the next AI.
 ---
 You are an expert technical archivist. Your task is to extract core learnings, critical decisions, pitfalls, and verified solutions from our current conversation and compile them into persistent, atomic memory documents for the next AI agent.
 

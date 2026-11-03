@@ -539,6 +539,11 @@ def collect_agents():
                 "client_tty": client_tty_by_session.get(t_info["session"], "")
                 if t_info
                 else "",
+                # Remote mode: the session maps via title tag (no pid ever matches a
+                # kitty pane), so the Mac cannot attach locally — jump must go through
+                # tssh. Local setups match by pid ancestry, so the overlap decides.
+                "remote": bool(session_by_title)
+                and all(p not in kitty_panes for p in chain),
             }
         )
     return agents
@@ -765,9 +770,31 @@ def jump_to(target, our_tty):
         # (title_overridden), skipping tab_title_template and freezing it; leaving it
         # out lets the title follow the active window through the template, like a
         # manual attach.
-        kitty_cmd(
-            "launch", "--type=tab", "tmux", "attach-session", "-t", target["session"]
-        )
+        # Remote mode (tmux on the VPS, kitty on the Mac): a bare `tmux attach` runs
+        # on the Mac and dies instantly — no such session there. One hop instead:
+        # tssh -t forces a tty and runs the attach inside the ssh session.
+        # `=name:` is exact match; a prefix hit (win-1 vs win-13) would attach wrong.
+        # PATH: kitty's launch env only has the system dirs (/usr/bin:/bin:...),
+        # tssh lives in /usr/local/bin on this Mac — prepend the common prefixes.
+        if target.get("remote"):
+            host = os.environ.get("TSSH_VPS_HOST", "vps")
+            kitty_cmd(
+                "launch",
+                "--type=tab",
+                "sh",
+                "-c",
+                "PATH=$PATH:/opt/homebrew/bin:/usr/local/bin "
+                f"exec tssh -t {host} 'tmux attach-session -t ={target['session']}:'",
+            )
+        else:
+            kitty_cmd(
+                "launch",
+                "--type=tab",
+                "tmux",
+                "attach-session",
+                "-t",
+                target["session"],
+            )
     if target["session"] != "No Byobu":
         t_tty = target["client_tty"]
         if target["tab_id"] and t_tty and our_tty and t_tty != our_tty:

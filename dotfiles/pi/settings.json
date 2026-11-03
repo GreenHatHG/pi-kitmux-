@@ -22,10 +22,10 @@
     }
   },
   "showCacheMissNotices": false,
-  "defaultThinkingLevel": "high",
+  "defaultThinkingLevel": "low",
   "hideThinkingBlock": true,
   "defaultProvider": "octpus",
-  "defaultModel": "deepseek-v4.1-flash",
+  "defaultModel": "glm-5.3-flash",
   "packages": [
     "npm:@oipsanthony/pi-command-history",
     "npm:@diegopetrucci/pi-context-inspector",
@@ -36,6 +36,8 @@
     "../../projects/pi-extension-tmux-subagent",
     "../../projects/pi-extension-tool-token-est",
     "../../projects/pi-watchdog",
-    "../../projects/pi-extension-goal-mode"
+    "../../projects/pi-extension-goal-mode",
+    "../../projects/pi-qmd-index",
+    "../../projects/pi-extension-run-limit"
   ]
 }
