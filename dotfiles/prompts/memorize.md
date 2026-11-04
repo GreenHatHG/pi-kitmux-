@@ -13,9 +13,10 @@ You are an expert technical archivist. Your task is to extract core learnings, c
 
 ### Conflict, Duplicate & Update Policy (CRITICAL):
 Before writing any file, you MUST inspect what already exists using a **"Query-First, Fallback-to-LS"** strategy:
-1. **Primary Check**: Run `qmd query "<topic>"` (or `qmdr query "<topic>"`).
+1. **Primary Check**: Run `qmdr query "<topic>" -c <collection>` (there is NO `qmd get` — always use `qmdr query`).
    - This searches indexed content across the knowledge base semantically.
-2. **Fallback Check**: If `qmd query` / `qmdr query` returns no hits, or if the command fails / collection does not exist:
+   - To read a matching document, ALWAYS use `qmdr multi-get "qmd://<collection>/<path>" -l 300`. Keep `-l` OUTSIDE the quotes — anything inside the quotes is treated as part of the file pattern. There is NO `qmdr get`.
+2. **Fallback Check**: If `qmdr query` returns no hits, or if the command fails / collection does not exist:
    - Run `ls docs/ai-context/handovers/` to manually inspect existing filenames and topic slugs (catches files created after the last index run or tool failures).
    - Never read the full content of all files—match by slug/filename first.
 
@@ -96,7 +97,8 @@ tags: [tag1, tag2, tag3]
 ### Execution Steps:
 1. **Analyze**: Scan the conversation history and extract all key learnings, bugs, or architectural decisions.
 2. **Check & Inspect**:
-   - Run `qmd query "<topic>"` (or `qmdr query "<topic>"`) to search for existing documents.
+   - Run `qmdr query "<topic>" -c <collection>` to search for existing documents.
+   - To read a matching document, ALWAYS use `qmdr multi-get "qmd://<collection>/<path>" -l 300` (there is NO `qmdr get`).
    - **If no match is found, or if the query command encounters an error/missing collection**: Run `ls docs/ai-context/handovers/` and match your candidate topic slug against existing file names.
 3. **Act**:
    - If an existing relevant file exists: Update it in-place using the Conflict & Update Policy.
