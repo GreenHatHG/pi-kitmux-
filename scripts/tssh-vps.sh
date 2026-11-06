@@ -87,11 +87,17 @@ VSCODE_FWD="${VSCODE_FWD_PREFIX}-$$-${RANDOM}"
 # Declared here, not below: even the no-kitty-socket branch keeps this tunnel
 VSCODE_ARGS=(-o ExitOnForwardFailure=yes -R "${VSCODE_FWD}:127.0.0.1:${VSCODE_PORT}")
 
+# The doubao translation server (launchd on the Mac, port 8765), same one-socket-
+# per-connection shape. The pi doubao-translate extension on the VPS globs
+# /tmp/doubao-http-* for the newest live socket; no listener on the Mac side just
+# means translations fail silently there, never the login itself.
+DOUBAO_FWD="/tmp/doubao-http-$$-${RANDOM}"
+
 sock="$(resolve_socket)"
 if [ -z "$sock" ]; then
   # Not a hard failure: tab grouping is what needs the kitty socket, `bind v` does not
   echo "tssh-vps: no live kitty socket found; connecting without tab grouping" >&2
-  exec tssh "${VSCODE_ARGS[@]}" "$HOST" "$@"
+  exec tssh "${VSCODE_ARGS[@]}" -R "${DOUBAO_FWD}:127.0.0.1:8765" "$HOST" "$@"
 fi
 
 # No StreamLocalBindUnlink any more: it exists to steal a path from someone else,
@@ -104,4 +110,5 @@ fi
 exec tssh \
   "${VSCODE_ARGS[@]}" \
   -R "${FWD}:${sock}" \
+  -R "${DOUBAO_FWD}:127.0.0.1:8765" \
   "$HOST" "$@"

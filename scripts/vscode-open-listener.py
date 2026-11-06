@@ -64,8 +64,10 @@ def handle(conn: socket.socket) -> None:
         remote_uri = "vscode-remote://ssh-remote+vps" + _folder_of(url)
         try:
             subprocess.run(
-                [CODE_BIN, "--folder-uri", remote_uri], check=False,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                [CODE_BIN, "--folder-uri", remote_uri],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
             )
         except (OSError, ValueError) as e:
             print(f"code failed for {remote_uri!r}: {e}", file=sys.stderr, flush=True)
@@ -73,7 +75,7 @@ def handle(conn: socket.socket) -> None:
 
 def _folder_of(url: str) -> str:
     """The folder part of a whitelisted URL, e.g. .../ssh-remote+vps/a/b -> /a/b."""
-    path = url[len(URL_PREFIX):].split("?", 1)[0]
+    path = url[len(URL_PREFIX) :].split("?", 1)[0]
     return "/" + path.lstrip("/")
 
 
