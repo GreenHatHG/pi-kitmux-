@@ -9,6 +9,13 @@
 # LIVE socket right before connecting and hands it to `tssh -R`; when tssh
 # exits, the tunnel dies with the connection — nothing to clean up.
 #
+# Auto-recovery uses tssh's OWN built-in reconnect (--reconnect, v0.1.25+): after a
+# drop it restarts the client and re-logs in, and a fresh login re-binds every -R
+# forward (forwards only bind at login, never on roam). -f runs it in the background
+# so the restart is hands-off; UdpSessionAttach re-attaches to the SAME remote
+# session instead of spawning a new shell. So we do NOT wrap this in a while-loop —
+# tssh's --reconnect re-logins and rebuilds the sockets by itself.
+#
 # Usage (on the Mac):
 #   tssh-vps                 # instead of: tssh vps
 #   TSSH_VPS_HOST=mybox tssh-vps ...
@@ -93,11 +100,21 @@ VSCODE_ARGS=(-o ExitOnForwardFailure=yes -R "${VSCODE_FWD}:127.0.0.1:${VSCODE_PO
 # means translations fail silently there, never the login itself.
 DOUBAO_FWD="/tmp/doubao-http-$$-${RANDOM}"
 
+# A UNIQUE session name, not a fixed one: tssh's UdpSessionName is a shared
+# resource. If two tssh-vps runs pick the same name, the second "attach" DETACHES
+# the first ("another client attached"). This breaks every reconnect in the current
+# live run. $$-$RANDOM is stable for the life of THIS script process, so tssh's own
+# --reconnect restart keeps the SAME name and re-attaches to its own session —
+# uniqueness across concurrent runs, stability across reconnects.
+# This mirrors the per-connection socket-path doctrine: never share one name.
+UDP_SESSION="kitmux-vps-$$-${RANDOM}"
+
 sock="$(resolve_socket)"
 if [ -z "$sock" ]; then
   # Not a hard failure: tab grouping is what needs the kitty socket, `bind v` does not
   echo "tssh-vps: no live kitty socket found; connecting without tab grouping" >&2
-  exec tssh "${VSCODE_ARGS[@]}" -R "${DOUBAO_FWD}:127.0.0.1:8765" "$HOST" "$@"
+  exec tssh --reconnect -f -o UdpSessionAttach=yes -o UdpSessionName="${UDP_SESSION}" \
+    "${VSCODE_ARGS[@]}" -R "${DOUBAO_FWD}:127.0.0.1:8765" "$HOST" "$@"
 fi
 
 # No StreamLocalBindUnlink any more: it exists to steal a path from someone else,
@@ -107,7 +124,7 @@ fi
 # broken tunnel is silent — check it with scripts/verify-kitty-tunnel.sh after changing
 # anything here. The option stays so a future tssh that does honour it fails loudly
 # instead of silently dropping the tunnel.
-exec tssh \
+exec tssh --reconnect -f -o UdpSessionAttach=yes -o UdpSessionName="${UDP_SESSION}" \
   "${VSCODE_ARGS[@]}" \
   -R "${FWD}:${sock}" \
   -R "${DOUBAO_FWD}:127.0.0.1:8765" \
