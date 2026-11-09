@@ -16,6 +16,13 @@
 # session instead of spawning a new shell. So we do NOT wrap this in a while-loop —
 # tssh's --reconnect re-logins and rebuilds the sockets by itself.
 #
+# One command, two jobs: the tunnel daemon runs in the BACKGROUND (-f -N: fork, no
+# remote shell), then this script drops you into a FOREGROUND interactive shell via
+# a separate `tssh HOST`. tssh has no single-process "detach forwards but keep a
+# shell" mode (verified in tssh source: -f backgrounds the whole invocation), so the
+# wrapper starts the daemon, then execs the shell. The daemon and the shell are two
+# independent connections; closing the shell does NOT kill the tunnel.
+#
 # Usage (on the Mac):
 #   tssh-vps                 # instead of: tssh vps
 #   TSSH_VPS_HOST=mybox tssh-vps ...
@@ -113,8 +120,9 @@ sock="$(resolve_socket)"
 if [ -z "$sock" ]; then
   # Not a hard failure: tab grouping is what needs the kitty socket, `bind v` does not
   echo "tssh-vps: no live kitty socket found; connecting without tab grouping" >&2
-  exec tssh --reconnect -f -o UdpSessionAttach=yes -o UdpSessionName="${UDP_SESSION}" \
+  tssh --reconnect -f -N -o UdpSessionAttach=yes -o UdpSessionName="${UDP_SESSION}" \
     "${VSCODE_ARGS[@]}" -R "${DOUBAO_FWD}:127.0.0.1:8765" "$HOST" "$@"
+  exec tssh "$HOST" "$@"
 fi
 
 # No StreamLocalBindUnlink any more: it exists to steal a path from someone else,
@@ -124,8 +132,14 @@ fi
 # broken tunnel is silent — check it with scripts/verify-kitty-tunnel.sh after changing
 # anything here. The option stays so a future tssh that does honour it fails loudly
 # instead of silently dropping the tunnel.
-exec tssh --reconnect -f -o UdpSessionAttach=yes -o UdpSessionName="${UDP_SESSION}" \
+# The background daemon carries the kitty socket, VS Code, and doubao forwards.
+# -N (tunnel-only) + -f (fork to background) + --reconnect. It returns immediately;
+# the `exec tssh HOST` below then gives the interactive shell.
+tssh --reconnect -f -N -o UdpSessionAttach=yes -o UdpSessionName="${UDP_SESSION}" \
   "${VSCODE_ARGS[@]}" \
   -R "${FWD}:${sock}" \
   -R "${DOUBAO_FWD}:127.0.0.1:8765" \
   "$HOST" "$@"
+
+# Foreground interactive shell (separate connection). Exiting it does not kill the daemon.
+exec tssh "$HOST" "$@"

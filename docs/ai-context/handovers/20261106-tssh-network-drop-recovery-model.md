@@ -37,12 +37,13 @@ Mac runs `tssh-vps.sh` to the VPS with `-R` reverse forwards (unix sockets for k
   - `scripts/tssh-vps.sh`: `FWD="/tmp/mykitty-remote-$$-${RANDOM}"`, `DOUBAO_FWD="/tmp/doubao-http-$$-${RANDOM}"`. No path fight, no orphaning.
   - VPS pickers: glob `/tmp/mykitty-*` / `/tmp/doubao-http-*`, sort newest-first, re-glob per request (no cached socket). They pick up a fresh tunnel automatically the moment it appears.
   - `scripts/verify-kitty-tunnel.sh`: `--now` for current health; `--wait` blocks until a reconnect happens, then health-checks the path.
-  - `scripts/tssh-vps.sh` (Mac wrapper): both `exec tssh` lines now pass `--reconnect -f -o UdpSessionAttach=yes -o UdpSessionName=kitmux-vps-$$-${RANDOM}`. This restarts the client, re-logs in, and a fresh login re-binds every `-R` forward. `-f` = background/hands-off. `UdpSessionAttach=yes` + a UNIQUE `UdpSessionName` = a restarted client re-attaches to the SAME remote session (its own) instead of spawning a new shell — and does not detach any other run. The per-connection unique path is safe here: each re-login makes a NEW `/tmp/mykitty-remote-*`, and the newest-glob picker self-heals.
+  - `scripts/tssh-vps.sh` (Mac wrapper): the tunnel daemon now runs in the BACKGROUND with `-f -N` (fork + tunnel-only), then the wrapper execs a FOREGROUND interactive shell (`tssh HOST`). One command = two jobs. The daemon carries `--reconnect -o UdpSessionAttach=yes -o UdpSessionName=kitmux-vps-$$-${RANDOM}`: after a drop the client restarts, re-logs in, and a fresh login re-binds every `-R` forward. `UdpSessionAttach=yes` + a UNIQUE `UdpSessionName` = a restarted client re-attaches to the SAME remote session (its own) instead of spawning a new shell — and does not detach any other run. The per-connection unique path is safe here: each re-login makes a NEW `/tmp/mykitty-remote-*`, and the newest-glob picker self-heals. The shell and the daemon are two independent connections; exiting the shell does NOT kill the tunnel.
 - **Minimal Code / Command Reference**:
   ```bash
-  # in scripts/tssh-vps.sh (both exec lines):
-  exec tssh --reconnect -f -o UdpSessionAttach=yes -o UdpSessionName="${UDP_SESSION}" \
+  # in scripts/tssh-vps.sh: tunnel daemon background, then foreground shell.
+  tssh --reconnect -f -N -o UdpSessionAttach=yes -o UdpSessionName="${UDP_SESSION}" \
     "${VSCODE_ARGS[@]}" -R "${FWD}:${sock}" -R "${DOUBAO_FWD}:127.0.0.1:8765" "$HOST" "$@"
+  exec tssh "$HOST" "$@"   # foreground interactive shell, separate connection
   # UDP_SESSION="kitmux-vps-$$-${RANDOM}" (unique per run, stable across --reconnect)
   # Recovery check on VPS:
   ./scripts/verify-kitty-tunnel.sh --now
@@ -58,4 +59,5 @@ Mac runs `tssh-vps.sh` to the VPS with `-R` reverse forwards (unix sockets for k
 - NEVER wrap `tssh-vps.sh` in a shell `while true` loop — use tssh's own `--reconnect -f`. NEVER fork/modify tssh/tsshd to add auto-reconnect; the feature already exists upstream (v0.1.25+).
 - NEVER use a FIXED `UdpSessionName` across runs — it is a shared resource and a second attach detaches the first ("another client attached"). Always make it unique per invocation (`kitmux-vps-$$-${RANDOM}`), which stays stable across `--reconnect` restarts.
 - `--reconnect` needs tssh v0.1.25+; if the Mac runs older tssh, upgrade before relying on it. `UdpSessionAttach`/`UdpSessionName` only matter in UDP (KCP) mode, which this setup already uses.
+- tssh has NO single-process "detach forwards but keep a shell" mode: `-f` backgrounds the whole invocation (verified in tssh source, `-f` implies `-n`), `-N` is the tunnel-only flag. So "one command, two jobs" is done by the wrapper: `-f -N` daemon + `exec tssh HOST` shell.
 - HARD LIMIT that no version fixes: if an outage exceeds `UdpAliveTimeout` (~10 days default), both tssh and tsshd exit; re-running `tssh-vps.sh` by hand is then the ONLY recovery.
