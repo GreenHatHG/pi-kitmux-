@@ -38,6 +38,7 @@
     "../../projects/pi-watchdog",
     "../../projects/pi-extension-goal-mode",
     "../../projects/pi-qmd-index",
-    "../../projects/pi-extension-run-limit"
+    "../../projects/pi-extension-run-limit",
+    "../../projects/pi-extension-doubao-translate"
   ]
 }
