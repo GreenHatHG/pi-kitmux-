@@ -23,9 +23,39 @@
 # wrapper starts the daemon, then execs the shell. The daemon and the shell are two
 # independent connections; closing the shell does NOT kill the tunnel.
 #
+# SINGLETON, not one-per-run: -f --reconnect spawns a supervisor (TRZSZ-SSH-BG-MONITOR)
+# that respawns the client forever, and an orphaned client used to linger on the VPS
+# for UdpAliveTimeout's default ~10 days. One daemon per tssh-vps run therefore stacked
+# up (7 orphans seen live on 2026-11-09). The wrapper starts the daemon ONLY if none is
+# running (marker below); re-runs reuse the existing tunnel instead of stacking another.
+#
+# NO UdpSessionAttach/UdpSessionName-for-attach: source-verified (tssh 0.1.27, ssh.go
+# forceExit) that in attach mode SIGTERM to the client is a DETACH — the remote tsshd
+# keeps every forward for the full alive timeout instead of closing. A -N client has
+# no shell session to re-attach to, so attach bought nothing. Plain --reconnect
+# re-logins and re-binds all -R forwards on its own. UdpAliveTimeout=600 caps any
+# client-less remote session at 10 minutes (client-side value, sent to tsshd at
+# connect; there is no server-side knob).
+#
 # Usage (on the Mac):
 #   tssh-vps                 # instead of: tssh vps
 #   TSSH_VPS_HOST=mybox tssh-vps ...
+#   tssh-vps --stop-tunnel   # kill the shared tunnel daemon (monitor + client)
+
+# --stop-tunnel: -f --reconnect runs a supervisor (TRZSZ-SSH-BG-MONITOR) that
+# respawns the client forever, so killing the monitor alone leaves the current
+# client child alive. Kill the whole process group instead.
+if [ "${1:-}" = "--stop-tunnel" ]; then
+  marker="kitmux-tunnel-daemon"
+  pgid=$(pgrep -f "UdpSessionName=${marker}" 2>/dev/null | head -1)
+  if [ -n "$pgid" ]; then
+    pgid=$(ps -o pgid= -p "$pgid" | tr -d ' ')
+    kill -- -"$pgid" && echo "tssh-vps: tunnel daemon (pgid ${pgid}) stopped"
+  else
+    echo "tssh-vps: no tunnel daemon running"
+  fi
+  exit 0
+fi
 #
 # Each run forwards to its OWN unique VPS path (/tmp/mykitty-remote-<pid>-<rand>),
 # so concurrent connections never steal the path from each other.
@@ -107,20 +137,21 @@ VSCODE_ARGS=(-o ExitOnForwardFailure=yes -R "${VSCODE_FWD}:127.0.0.1:${VSCODE_PO
 # means translations fail silently there, never the login itself.
 DOUBAO_FWD="/tmp/doubao-http-$$-${RANDOM}"
 
-# A UNIQUE session name, not a fixed one: tssh's UdpSessionName is a shared
-# resource. If two tssh-vps runs pick the same name, the second "attach" DETACHES
-# the first ("another client attached"). This breaks every reconnect in the current
-# live run. $$-$RANDOM is stable for the life of THIS script process, so tssh's own
-# --reconnect restart keeps the SAME name and re-attaches to its own session —
-# uniqueness across concurrent runs, stability across reconnects.
-# This mirrors the per-connection socket-path doctrine: never share one name.
-UDP_SESSION="kitmux-vps-$$-${RANDOM}"
+# Inert marker for the singleton guard and --stop-tunnel. Never set
+# UdpSessionAttach=yes with it: a second attach would detach the first client.
+UDP_SESSION="kitmux-tunnel-daemon"
+
+# Singleton guard: exactly one tunnel daemon, shared by all tssh-vps runs.
+if pgrep -f "UdpSessionName=${UDP_SESSION}" >/dev/null 2>&1; then
+  echo "tssh-vps: tunnel daemon already running; reusing it" >&2
+  exec tssh "$HOST" "$@"
+fi
 
 sock="$(resolve_socket)"
 if [ -z "$sock" ]; then
   # Not a hard failure: tab grouping is what needs the kitty socket, `bind v` does not
   echo "tssh-vps: no live kitty socket found; connecting without tab grouping" >&2
-  tssh --reconnect -f -N -o UdpSessionAttach=yes -o UdpSessionName="${UDP_SESSION}" \
+  tssh --reconnect -f -N -o UdpAliveTimeout=600 -o UdpSessionName="${UDP_SESSION}" \
     "${VSCODE_ARGS[@]}" -R "${DOUBAO_FWD}:127.0.0.1:8765" "$HOST" "$@"
   exec tssh "$HOST" "$@"
 fi
@@ -135,7 +166,7 @@ fi
 # The background daemon carries the kitty socket, VS Code, and doubao forwards.
 # -N (tunnel-only) + -f (fork to background) + --reconnect. It returns immediately;
 # the `exec tssh HOST` below then gives the interactive shell.
-tssh --reconnect -f -N -o UdpSessionAttach=yes -o UdpSessionName="${UDP_SESSION}" \
+tssh --reconnect -f -N -o UdpAliveTimeout=600 -o UdpSessionName="${UDP_SESSION}" \
   "${VSCODE_ARGS[@]}" \
   -R "${FWD}:${sock}" \
   -R "${DOUBAO_FWD}:127.0.0.1:8765" \
