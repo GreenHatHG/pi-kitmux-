@@ -28,6 +28,9 @@
 # for UdpAliveTimeout's default ~10 days. One daemon per tssh-vps run therefore stacked
 # up (7 orphans seen live on 2026-11-09). The wrapper starts the daemon ONLY if none is
 # running (marker below); re-runs reuse the existing tunnel instead of stacking another.
+# The reuse guard also lsof-checks the daemon for a live connection: a stuck supervisor
+# never exits, so plain pgrep reuse silently ran with no tunnel (seen 2026-11-12); a
+# connection-less daemon is killed and restarted instead.
 #
 # NO UdpSessionAttach/UdpSessionName-for-attach: source-verified (tssh 0.1.27, ssh.go
 # forceExit) that in attach mode SIGTERM to the client is a DETACH — the remote tsshd
@@ -45,15 +48,20 @@
 # --stop-tunnel: -f --reconnect runs a supervisor (TRZSZ-SSH-BG-MONITOR) that
 # respawns the client forever, so killing the monitor alone leaves the current
 # client child alive. Kill the whole process group instead.
-if [ "${1:-}" = "--stop-tunnel" ]; then
-  marker="kitmux-tunnel-daemon"
+stop_daemon() {
+  # Hard-coded marker: this can run before `set -u`, before UDP_SESSION exists.
+  local marker="kitmux-tunnel-daemon" pgid
   pgid=$(pgrep -f "UdpSessionName=${marker}" 2>/dev/null | head -1)
   if [ -n "$pgid" ]; then
-    pgid=$(ps -o pgid= -p "$pgid" | tr -d ' ')
-    kill -- -"$pgid" && echo "tssh-vps: tunnel daemon (pgid ${pgid}) stopped"
+    pgid=$(ps -o pgid= -p "$pgid" 2>/dev/null | tr -d ' ')
+    kill -- -"$pgid" && echo "tssh-vps: tunnel daemon (pgid ${pgid}) stopped" >&2
   else
-    echo "tssh-vps: no tunnel daemon running"
+    echo "tssh-vps: no tunnel daemon running" >&2
   fi
+}
+
+if [ "${1:-}" = "--stop-tunnel" ]; then
+  stop_daemon
   exit 0
 fi
 #
@@ -141,10 +149,34 @@ DOUBAO_FWD="/tmp/doubao-http-$$-${RANDOM}"
 # UdpSessionAttach=yes with it: a second attach would detach the first client.
 UDP_SESSION="kitmux-tunnel-daemon"
 
+# pgrep proves a process exists, not that the tunnel works: the --reconnect
+# supervisor never exits, so one stuck in a failed-relogin loop still matches.
+# The healthy client owns the live connection sockets (TCP ESTABLISHED, or the
+# UDP socket in kcp mode); the supervisor owns none. Sampling during a brief
+# reconnect can misjudge a healthy daemon as stale — harmless, the restart is
+# just a fresh login with brand-new per-run forward paths.
+daemon_healthy() {
+  local pid
+  # No lsof -> return 0 (reuse): failing closed would restart the daemon on EVERY
+  # run. macOS ships /usr/sbin/lsof, so this is only a safety net.
+  command -v lsof >/dev/null 2>&1 || return 0
+  for pid in $(pgrep -f "UdpSessionName=${UDP_SESSION}"); do
+    if lsof -a -p "$pid" -i -n -P 2>/dev/null | grep -qE 'ESTABLISHED|UDP'; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 # Singleton guard: exactly one tunnel daemon, shared by all tssh-vps runs.
 if pgrep -f "UdpSessionName=${UDP_SESSION}" >/dev/null 2>&1; then
-  echo "tssh-vps: tunnel daemon already running; reusing it" >&2
-  exec tssh "$HOST" "$@"
+  if daemon_healthy; then
+    echo "tssh-vps: tunnel daemon already running; reusing it" >&2
+    exec tssh "$HOST" "$@"
+  fi
+  # Alive but connection-less: reusing it would mean no tunnel at all.
+  echo "tssh-vps: tunnel daemon alive but not connected; restarting it" >&2
+  stop_daemon
 fi
 
 sock="$(resolve_socket)"
