@@ -39,6 +39,7 @@
     "../../projects/pi-extension-goal-mode",
     "../../projects/pi-qmd-index",
     "../../projects/pi-extension-run-limit",
-    "../../projects/pi-extension-doubao-translate"
+    "../../projects/pi-extension-doubao-translate",
+    "../../projects/pi-commit-guard"
   ]
 }
