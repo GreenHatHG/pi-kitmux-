@@ -64,6 +64,9 @@ export OCTPUS_API_KEY=
 export TAVILY_API_KEY=
 export EXA_API_KEY=
 export FIRECRAWL_API_KEY=
+# context7 (optional: docs tools for the web-research sub-agent, anonymous
+# IP limits without it). Get a key at https://context7.com/dashboard
+export CONTEXT7_API_KEY=
 EOF
   chmod 600 ~/.config/pi-kitmux/secrets.env
   # deploy.sh builds ~/.zshrc from the omz template + zshrc.pre, links custom.zsh,

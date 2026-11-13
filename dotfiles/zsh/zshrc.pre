@@ -6,8 +6,10 @@ if [[ -r "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh" ]]
   source "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh"
 fi
 
-# api keys (octopus / tavily / exa / firecrawl) live outside git; models.json
-# and web-search.json reference them as $OCTPUS_API_KEY etc.
+# api keys (octopus / tavily / exa / firecrawl / context7) live outside git;
+# models.json and web-search.json reference them as $OCTPUS_API_KEY etc.
+# CONTEXT7_API_KEY is read directly from env by @upstash/context7-pi (the
+# web-research sub-agent's docs tools); without it only anonymous IP limits apply.
 [ -f "$HOME/.config/pi-kitmux/secrets.env" ] && source "$HOME/.config/pi-kitmux/secrets.env"
 
 ZSH_THEME="powerlevel10k/powerlevel10k"
